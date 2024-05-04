@@ -1,0 +1,2 @@
+diffusers==0.21.4
+triton==2.0.0.dev20221202

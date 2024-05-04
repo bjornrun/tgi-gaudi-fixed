@@ -1,0 +1,10 @@
+hjson==3.1.0
+ninja==1.11.1.1
+numpy==1.23.5
+packaging==23.2
+psutil==5.9.6
+py-cpuinfo==9.0.0
+pydantic==1.10.13
+pynvml==8.0.4
+torch
+tqdm==4.66.1
