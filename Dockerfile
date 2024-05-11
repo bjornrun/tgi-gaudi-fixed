@@ -61,6 +61,7 @@ RUN cd server && \
     pip install -r requirements.txt && \
     bash ./dill-0.3.7-patch.sh && \
     pip install ./DeepSpeed \
+    pip install ./optimum-habana \
     pip install . --no-cache-dir
 
 # Install benchmarker
