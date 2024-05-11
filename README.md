@@ -25,7 +25,7 @@ limitations under the License.
 >    model=mistralai/Mixtral-8x22B-Instruct-v0.1
 >    volume=$PWD/data
 >
->    docker run -p 8090:80 -v $volume:/data -e LIMIT_HPU_GRAPH=true --runtime=habana
+>    docker run -p 8091:80 -v $volume:/data -e LIMIT_HPU_GRAPH=true --runtime=habana -e PT_HPU_ENABLE_LAZY_COLLECTIVES=true -e HABANA_VISIBLE_DEVICES=all -e OMPI_MCA_btl_vader_single_copy_mechanism=none --cap-add=sys_nice --ipc=host  tgi_gaudi --model-id $model --dtype bfloat16  --max-total-tokens 65536 --max-input-length 32768 --max-batch-prefill-tokens 32768 --sharded true --num-shard 8
 >    ```
 
 
