@@ -59,7 +59,7 @@ COPY server/Makefile server/Makefile
 RUN cd server && \
     make gen-server && \
     pip install -r requirements.txt && \
-    bash ./dill-0.3.7-patch.sh && \
+    bash ./dill-0.3.8-patch.sh && \
     pip install ./DeepSpeed \
     pip install ./optimum-habana \
     pip install . --no-cache-dir

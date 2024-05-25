@@ -220,6 +220,7 @@ class GaudiMixtralAttentionLongSequence:
 class GaudiMixtralAttention(MixtralAttention):
     def __init__(self, config: MixtralConfig, layer_idx: Optional[int] = None):
         super().__init__(config, layer_idx)
+        self.config = MixtralConfig(config)
         self._init_rope()
         self.k_cache = KVCache()
         self.v_cache = KVCache()
@@ -408,7 +409,7 @@ def gaudi_mixtral_block_sparse_moe_forward(self, hidden_states: torch.Tensor) ->
     # router_logits: (batch * sequence_length, n_experts)
     router_logits = self.gate(hidden_states)
 
-    if is_deepspeed_available():
+    if is_deepspeed_available() and (not self.training):
         from deepspeed import comm as dist
 
         if dist.is_initialized():

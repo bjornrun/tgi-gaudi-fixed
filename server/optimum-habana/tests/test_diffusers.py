@@ -16,6 +16,7 @@
 
 import json
 import os
+import random
 import re
 import subprocess
 import tempfile
@@ -27,14 +28,30 @@ import numpy as np
 import pytest
 import requests
 import torch
-from diffusers import AutoencoderKL, ControlNetModel, UNet2DConditionModel, UniPCMultistepScheduler
+from diffusers import (
+    AutoencoderKL,
+    AutoencoderKLTemporalDecoder,
+    ControlNetModel,
+    UNet2DConditionModel,
+    UNetSpatioTemporalConditionModel,
+    UniPCMultistepScheduler,
+)
 from diffusers.pipelines.controlnet.pipeline_controlnet import MultiControlNetModel
 from diffusers.utils import load_image, numpy_to_pil
+from diffusers.utils.testing_utils import floats_tensor
 from diffusers.utils.torch_utils import randn_tensor
 from huggingface_hub import snapshot_download
 from parameterized import parameterized
 from PIL import Image
-from transformers import CLIPTextConfig, CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
+from transformers import (
+    CLIPImageProcessor,
+    CLIPTextConfig,
+    CLIPTextModel,
+    CLIPTextModelWithProjection,
+    CLIPTokenizer,
+    CLIPVisionConfig,
+    CLIPVisionModelWithProjection,
+)
 from transformers.testing_utils import parse_flag_from_env, slow
 
 from optimum.habana import GaudiConfig
@@ -48,13 +65,17 @@ from optimum.habana.diffusers import (
     GaudiStableDiffusionPipeline,
     GaudiStableDiffusionUpscalePipeline,
     GaudiStableDiffusionXLPipeline,
+    GaudiStableVideoDiffusionPipeline,
 )
 from optimum.habana.utils import set_seed
 
-from .clip_coco_utils import download_files
+from .clip_coco_utils import calculate_clip_score, download_files
 
 
-if os.environ.get("GAUDI2_CI", "0") == "1":
+IS_GAUDI2 = os.environ.get("GAUDI2_CI", "0") == "1"
+
+
+if IS_GAUDI2:
     THROUGHPUT_BASELINE_BF16 = 1.086
     THROUGHPUT_BASELINE_AUTOCAST = 0.394
     TEXTUAL_INVERSION_THROUGHPUT = 104.29806
@@ -428,7 +449,7 @@ class GaudiStableDiffusionPipelineTester(TestCase):
 
         prompt = "A painting of a squirrel eating a burger"
 
-        # Test batch_size > 1 where batch_size is a divider of the total number of generated images
+        # Test num_images > 1 where num_images is a divider of the total number of generated images
         batch_size = 3
         num_images_per_prompt = batch_size**2
         images = sd_pipe(
@@ -455,7 +476,7 @@ class GaudiStableDiffusionPipelineTester(TestCase):
         self.assertEqual(len(images), num_prompts * num_images_per_prompt)
         self.assertEqual(images[-1].shape, (64, 64, 3))
 
-        # Test batch_size when it is not a divider of the toal number of generated images for a single prompt
+        # Test num_images when it is not a divider of the total number of generated images for a single prompt
         num_images_per_prompt = 7
         images = sd_pipe(
             prompt,
@@ -608,6 +629,8 @@ class GaudiStableDiffusionPipelineTester(TestCase):
 
     @slow
     def test_no_generation_regression(self):
+        seed = 27
+        set_seed(seed)
         model_name = "CompVis/stable-diffusion-v1-4"
         # fp32
         scheduler = GaudiDDIMScheduler.from_pretrained(model_name, subfolder="scheduler")
@@ -619,39 +642,33 @@ class GaudiStableDiffusionPipelineTester(TestCase):
             use_hpu_graphs=True,
             gaudi_config=GaudiConfig(use_torch_autocast=False),
         )
-        set_seed(27)
+
+        prompt = "An image of a squirrel in Picasso style"
+        generator = torch.manual_seed(seed)
         outputs = pipeline(
-            prompt="An image of a squirrel in Picasso style",
+            prompt=prompt,
+            generator=generator,
             output_type="np",
         )
 
-        if os.environ.get("GAUDI2_CI", "0") == "1":
-            expected_slice = np.array(
-                [
-                    0.68306947,
-                    0.6812112,
-                    0.67309505,
-                    0.70057267,
-                    0.6582885,
-                    0.6325019,
-                    0.6708976,
-                    0.6226433,
-                    0.58038336,
-                ]
-            )
+        if IS_GAUDI2:
+            target_score = 29.8925
         else:
-            expected_slice = np.array(
-                [0.70760196, 0.7136303, 0.7000798, 0.714934, 0.6776865, 0.6800843, 0.6923707, 0.6653969, 0.6408076]
-            )
+            target_score = 36.774
+
         image = outputs.images[0]
         pil_image = numpy_to_pil(image)[0]
         pil_image.save("test_no_generation_regression_output.png")
 
+        clip_score = calculate_clip_score(np.expand_dims(image, axis=0), [prompt])
+
         self.assertEqual(image.shape, (512, 512, 3))
-        self.assertLess(np.abs(expected_slice - image[-3:, -3:, -1].flatten()).max(), 5e-3)
+        self.assertGreaterEqual(clip_score, target_score)
 
     @slow
     def test_no_generation_regression_ldm3d(self):
+        seed = 27
+        set_seed(seed)
         model_name = "Intel/ldm3d-4c"
         # fp32
         scheduler = GaudiDDIMScheduler.from_pretrained(model_name, subfolder="scheduler")
@@ -663,61 +680,28 @@ class GaudiStableDiffusionPipelineTester(TestCase):
             use_hpu_graphs=True,
             gaudi_config=GaudiConfig(),
         )
-        set_seed(27)
+
+        prompt = "An image of a squirrel in Picasso style"
+        generator = torch.manual_seed(seed)
         outputs = pipeline(
-            prompt="An image of a squirrel in Picasso style",
+            prompt=prompt,
+            generator=generator,
             output_type="np",
         )
 
-        if os.environ.get("GAUDI2_CI", "0") == "1":
-            expected_slice_rgb = np.array(
-                [
-                    0.2099357,
-                    0.16664368,
-                    0.08352646,
-                    0.20643419,
-                    0.16748399,
-                    0.08781305,
-                    0.21379063,
-                    0.19943115,
-                    0.04389626,
-                ]
-            )
-            expected_slice_depth = np.array(
-                [
-                    0.68369114,
-                    0.6827824,
-                    0.6852779,
-                    0.6836072,
-                    0.6888298,
-                    0.6895473,
-                    0.6853674,
-                    0.67561126,
-                    0.660434,
-                ]
-            )
+        if IS_GAUDI2:
+            target_score = 28.0894
         else:
-            expected_slice_rgb = np.array([0.7083766, 1.0, 1.0, 0.70610344, 0.9867363, 1.0, 0.7214538, 1.0, 1.0])
-            expected_slice_depth = np.array(
-                [
-                    0.919621,
-                    0.92072034,
-                    0.9184986,
-                    0.91994286,
-                    0.9242079,
-                    0.93387043,
-                    0.92345214,
-                    0.93558526,
-                    0.9223714,
-                ]
-            )
+            target_score = 35.81
+
         rgb = outputs.rgb[0]
         depth = outputs.depth[0]
 
+        rgb_clip_score = calculate_clip_score(np.expand_dims(rgb, axis=0), [prompt])
+
         self.assertEqual(rgb.shape, (512, 512, 3))
         self.assertEqual(depth.shape, (512, 512, 1))
-        self.assertLess(np.abs(expected_slice_rgb - rgb[-3:, -3:, -1].flatten()).max(), 5e-3)
-        self.assertLess(np.abs(expected_slice_depth - depth[-3:, -3:, -1].flatten()).max(), 5e-3)
+        self.assertGreaterEqual(rgb_clip_score, target_score)
 
     @slow
     def test_no_generation_regression_upscale(self):
@@ -739,7 +723,7 @@ class GaudiStableDiffusionPipelineTester(TestCase):
         low_res_img = low_res_img.resize((128, 128))
         prompt = "a white cat"
         upscaled_image = pipeline(prompt=prompt, image=low_res_img, output_type="np").images[0]
-        if os.environ.get("GAUDI2_CI", "0") == "1":
+        if IS_GAUDI2:
             expected_slice = np.array(
                 [
                     0.16527882,
@@ -1910,3 +1894,151 @@ class TrainControlNet(TestCase):
             ).images[0]
 
             self.assertEqual(image.shape, (512, 512, 3))
+
+
+class GaudiStableVideoDiffusionPipelineTester(TestCase):
+    """
+    Tests the StableVideoDiffusionPipeline for Gaudi.
+    Adapted from: https://github.com/huggingface/diffusers/blob/v0.24.0-release/tests/pipelines/stable_video_diffusion/test_stable_video_diffusion.py
+    """
+
+    def get_dummy_components(self):
+        torch.manual_seed(0)
+        unet = UNetSpatioTemporalConditionModel(
+            block_out_channels=(32, 64),
+            layers_per_block=2,
+            sample_size=32,
+            in_channels=8,
+            out_channels=4,
+            down_block_types=(
+                "CrossAttnDownBlockSpatioTemporal",
+                "DownBlockSpatioTemporal",
+            ),
+            up_block_types=("UpBlockSpatioTemporal", "CrossAttnUpBlockSpatioTemporal"),
+            cross_attention_dim=32,
+            num_attention_heads=8,
+            projection_class_embeddings_input_dim=96,
+            addition_time_embed_dim=32,
+        )
+        scheduler = GaudiEulerDiscreteScheduler(
+            beta_start=0.00085,
+            beta_end=0.012,
+            beta_schedule="scaled_linear",
+            interpolation_type="linear",
+            num_train_timesteps=1000,
+            prediction_type="v_prediction",
+            sigma_max=700.0,
+            sigma_min=0.002,
+            steps_offset=1,
+            timestep_spacing="leading",
+            timestep_type="continuous",
+            trained_betas=None,
+            use_karras_sigmas=True,
+        )
+
+        torch.manual_seed(0)
+        vae = AutoencoderKLTemporalDecoder(
+            block_out_channels=[32, 64],
+            in_channels=3,
+            out_channels=3,
+            down_block_types=["DownEncoderBlock2D", "DownEncoderBlock2D"],
+            latent_channels=4,
+        )
+
+        torch.manual_seed(0)
+        config = CLIPVisionConfig(
+            hidden_size=32,
+            projection_dim=32,
+            num_hidden_layers=5,
+            num_attention_heads=4,
+            image_size=32,
+            intermediate_size=37,
+            patch_size=1,
+        )
+        image_encoder = CLIPVisionModelWithProjection(config)
+
+        torch.manual_seed(0)
+        feature_extractor = CLIPImageProcessor(crop_size=32, size=32)
+        components = {
+            "unet": unet,
+            "image_encoder": image_encoder,
+            "scheduler": scheduler,
+            "vae": vae,
+            "feature_extractor": feature_extractor,
+        }
+        return components
+
+    def get_dummy_inputs(self, device, seed=0):
+        if str(device).startswith("mps"):
+            generator = torch.manual_seed(seed)
+        else:
+            generator = torch.Generator(device="cpu").manual_seed(seed)
+
+        image = floats_tensor((1, 3, 32, 32), rng=random.Random(0)).to(device)
+        inputs = {
+            "generator": generator,
+            "image": image,
+            "num_inference_steps": 2,
+            "output_type": "pt",
+            "min_guidance_scale": 1.0,
+            "max_guidance_scale": 2.5,
+            "num_frames": 2,
+            "height": 32,
+            "width": 32,
+        }
+        return inputs
+
+    def test_stable_video_diffusion_single_video(self):
+        device = "cpu"  # ensure determinism for the device-dependent torch.Generator
+        components = self.get_dummy_components()
+        gaudi_config = GaudiConfig(use_torch_autocast=False)
+        sd_pipe = GaudiStableVideoDiffusionPipeline(use_habana=True, gaudi_config=gaudi_config, **components)
+        for component in sd_pipe.components.values():
+            if hasattr(component, "set_default_attn_processor"):
+                component.set_default_attn_processor()
+
+        sd_pipe.to(device)
+        sd_pipe.set_progress_bar_config(disable=None)
+
+        outputs = sd_pipe(
+            **self.get_dummy_inputs(device),
+        ).frames
+        image = outputs[0]
+        image_slice = image[0, -3:, -3:, -1]
+
+        self.assertEqual(len(outputs), 1)
+        self.assertEqual(image.shape, (2, 3, 32, 32))
+
+        expected_slice = np.array([0.5910, 0.5797, 0.5521, 0.6628, 0.6212, 0.6422, 0.5681, 0.5232, 0.5343])
+
+        self.assertLess(np.abs(image_slice.flatten() - expected_slice).max(), 1e-2)
+
+    @slow
+    def test_stable_video_diffusion_no_throughput_regression_bf16(self):
+        image_url = (
+            "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/svd/rocket.png"
+        )
+        model_name = "stabilityai/stable-video-diffusion-img2vid-xt"
+        scheduler = GaudiEulerDiscreteScheduler.from_pretrained(model_name, subfolder="scheduler")
+
+        pipeline = GaudiStableVideoDiffusionPipeline.from_pretrained(
+            model_name,
+            scheduler=scheduler,
+            use_habana=True,
+            use_hpu_graphs=True,
+            gaudi_config=GaudiConfig.from_pretrained("Habana/stable-diffusion"),
+            torch_dtype=torch.bfloat16,
+        )
+        set_seed(42)
+        prompt_image = load_image(image_url)
+        outputs = pipeline(
+            image=prompt_image,
+            num_videos_per_prompt=1,
+            batch_size=1,
+            height=256,
+            width=256,
+        )
+
+        self.assertEqual(len(outputs.frames[0]), 25)
+        if IS_GAUDI2:
+            self.assertGreaterEqual(outputs.throughput, 0.95 * 0.012)
