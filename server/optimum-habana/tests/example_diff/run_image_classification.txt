@@ -1,16 +1,16 @@
 14a15,16
 > # limitations under the License.
 > """Fine-tuning a 🤗 Transformers model for image classification"""
-24a27
+25a28
 > import transformers
-37,38d39
+38,39d40
 < 
 < import transformers
-45,47d45
+46,48d46
 <     Trainer,
 <     TrainingArguments,
 <     set_seed,
-52a51,60
+53a52,61
 > from optimum.habana import GaudiConfig, GaudiTrainer, GaudiTrainingArguments
 > from optimum.habana.utils import set_seed
 > 
@@ -21,39 +21,39 @@
 > 
 >     def check_optimum_habana_min_version(*a, **b):
 >         return ()
-54d61
+55d62
 < """ Fine-tuning a 🤗 Transformers model for image classification"""
-58,59c65,67
+59,60c66,68
 < # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-< check_min_version("4.42.0.dev0")
+< check_min_version("4.41.0.dev0")
 ---
 > # Will error if the minimal version of Transformers and Optimum Habana are not installed. Remove at your own risks.
 > check_min_version("4.38.0")
 > check_optimum_habana_min_version("1.10.0")
-184c192
+191c199
 <     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
 ---
 >     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, GaudiTrainingArguments))
-212a221,227
+228a237,243
 >     gaudi_config = GaudiConfig.from_pretrained(
 >         training_args.gaudi_config_name,
 >         cache_dir=model_args.cache_dir,
 >         revision=model_args.model_revision,
->         token=model_args.token,
+>         use_auth_token=True if model_args.use_auth_token else None,
 >     )
 > 
-213a229
+229a245
 >     mixed_precision = training_args.bf16 or gaudi_config.use_torch_autocast
-215,216c231,233
+231,232c247,249
 <         f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}, "
 <         + f"distributed training: {training_args.parallel_mode.value == 'distributed'}, 16-bits training: {training_args.fp16}"
 ---
 >         f"Process rank: {training_args.local_rank}, device: {training_args.device}, "
 >         + f"distributed training: {training_args.parallel_mode.value == 'distributed'}, "
 >         + f"mixed-precision training: {mixed_precision}"
-392c409
+408c425
 <     trainer = Trainer(
 ---
 >     trainer = GaudiTrainer(
-393a411
+409a427
 >         gaudi_config=gaudi_config,

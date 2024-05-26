@@ -100,6 +100,12 @@ class ModelArguments:
         default="main",
         metadata={"help": "The specific model version to use (can be a branch name, tag name or commit id)."},
     )
+    use_auth_token: bool = field(
+        default=False,
+        metadata={
+            "help": "The `use_auth_token` argument is deprecated and will be removed in v4.34. Please use `token` instead."
+        },
+    )
     trust_remote_code: bool = field(
         default=False,
         metadata={
@@ -128,7 +134,7 @@ class ModelArguments:
         default=False,
         metadata={
             "help": (
-                "Whether to run attention softmax layer in bf16 precision for fine-tuning. The current support is limited to Llama only."
+                "Whether to run attention softmax layer in bf16 precision for fine-tuning. The current support is limited to Llama only.",
             )
         },
     )
@@ -136,7 +142,7 @@ class ModelArguments:
         default=False,
         metadata={
             "help": (
-                "Whether to use Habana flash attention for fine-tuning. The current support is limited to Llama only."
+                "Whether to use Habana flash attention for fine-tuning. The current support is limited to Llama only.",
             )
         },
     )
@@ -145,7 +151,7 @@ class ModelArguments:
         metadata={
             "help": (
                 "Whether to enable recompute in Habana flash attention for fine-tuning."
-                " It is applicable only when use_flash_attention is True."
+                " It is applicable only when use_flash_attention is True.",
             )
         },
     )
@@ -154,14 +160,16 @@ class ModelArguments:
         metadata={
             "help": (
                 "Whether to enable causal mask in Habana flash attention for fine-tuning."
-                " It is applicable only when use_flash_attention is True."
+                " It is applicable only when use_flash_attention is True.",
             )
         },
     )
     use_fused_rope: bool = field(
         default=True,
         metadata={
-            "help": ("Whether to use Habana fused-rope for fine-tuning. The current support is limited to Llama only.")
+            "help": (
+                "Whether to use Habana fused-rope for fine-tuning. The current support is limited to Llama only.",
+            )
         },
     )
     load_meta_device: bool = field(
@@ -429,6 +437,7 @@ def main():
     config_kwargs = {
         "cache_dir": model_args.cache_dir,
         "revision": model_args.model_revision,
+        "use_auth_token": True if model_args.use_auth_token else None,
         "trust_remote_code": True if model_args.trust_remote_code else None,
         "use_cache": False if training_args.gradient_checkpointing else model_args.use_cache,
         "token": model_args.token,
@@ -444,6 +453,7 @@ def main():
         "cache_dir": model_args.cache_dir,
         "use_fast": model_args.use_fast_tokenizer,
         "revision": model_args.model_revision,
+        "use_auth_token": True if model_args.use_auth_token else None,
         "token": model_args.token,
     }
     if model_args.tokenizer_name:
@@ -471,7 +481,7 @@ def main():
             data_args.dataset_name,
             data_args.dataset_config_name,
             cache_dir=model_args.cache_dir,
-            token=model_args.token,
+            use_auth_token=True if model_args.use_auth_token else None,
         )
 
         if "validation" not in raw_datasets.keys() and training_args.do_eval:
@@ -480,14 +490,14 @@ def main():
                 data_args.dataset_config_name,
                 split=f"train[:{data_args.validation_split_percentage}%]",
                 cache_dir=model_args.cache_dir,
-                token=model_args.token,
+                use_auth_token=True if model_args.use_auth_token else None,
             )
             raw_datasets["train"] = load_dataset(
                 data_args.dataset_name,
                 data_args.dataset_config_name,
                 split=f"train[{data_args.validation_split_percentage}%:]",
                 cache_dir=model_args.cache_dir,
-                token=model_args.token,
+                use_auth_token=True if model_args.use_auth_token else None,
             )
     else:
         data_files = {}
@@ -508,7 +518,7 @@ def main():
             extension,
             data_files=data_files,
             cache_dir=model_args.cache_dir,
-            token=model_args.token,
+            use_auth_token=True if model_args.use_auth_token else None,
             **dataset_args,
         )
 
@@ -519,7 +529,7 @@ def main():
                 data_files=data_files,
                 split=f"train[:{data_args.validation_split_percentage}%]",
                 cache_dir=model_args.cache_dir,
-                token=model_args.token,
+                use_auth_token=True if model_args.use_auth_token else None,
                 **dataset_args,
             )
             raw_datasets["train"] = load_dataset(
@@ -527,7 +537,7 @@ def main():
                 data_files=data_files,
                 split=f"train[{data_args.validation_split_percentage}%:]",
                 cache_dir=model_args.cache_dir,
-                token=model_args.token,
+                use_auth_token=True if model_args.use_auth_token else None,
                 **dataset_args,
             )
 
@@ -567,6 +577,7 @@ def main():
             config=config,
             cache_dir=model_args.cache_dir,
             revision=model_args.model_revision,
+            use_auth_token=True if model_args.use_auth_token else None,
             trust_remote_code=True if model_args.trust_remote_code else None,
             torch_dtype=model_dtype,
             low_cpu_mem_usage=model_args.low_cpu_mem_usage,
@@ -748,6 +759,10 @@ def main():
             )
         if training_args.gradient_checkpointing:
             model.enable_input_require_grads()
+        if training_args.torch_compile:
+            from optimum.habana.peft.layer import GaudiLoraLayerLinearForward
+
+            tuners.lora.layer.Linear.forward = GaudiLoraLayerLinearForward
         lora_model = get_peft_model(model, peft_config)
         if training_args.bf16 and finetune_args.peft_type != "ia3":
             lora_model = lora_model.to(torch.bfloat16)

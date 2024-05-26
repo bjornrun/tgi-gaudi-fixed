@@ -59,9 +59,6 @@ ACCURACY_PERF_FACTOR = 0.99
 TIME_PERF_FACTOR = 1.05
 
 
-IS_GAUDI2 = os.environ.get("GAUDI2_CI", "0") == "1"
-
-
 def _get_supported_models_for_script(
     models_to_test: Dict[str, List[Tuple[str]]],
     task_mapping: Dict[str, str],
@@ -79,12 +76,7 @@ def _get_supported_models_for_script(
     """
 
     def is_valid_model_type(model_type: str) -> bool:
-        true_model_type = "llama" if model_type == "llama_guard" else model_type
-        if model_type == "protst":
-            in_task_mapping = True
-        else:
-            # llama_guard is not a model type in Transformers so CONFIG_MAPPING wouldn't find it
-            in_task_mapping = CONFIG_MAPPING[true_model_type] in task_mapping
+        in_task_mapping = CONFIG_MAPPING[model_type] in task_mapping
         in_valid_models_for_task = model_type in valid_models_for_task
         if in_task_mapping and in_valid_models_for_task:
             return True
@@ -171,16 +163,6 @@ _SCRIPT_TO_MODEL_MAPPING = {
         MODEL_FOR_CAUSAL_LM_MAPPING,
         ["llama"],
     ),
-    "run_prompt_tuning_clm": _get_supported_models_for_script(
-        MODELS_TO_TEST_MAPPING,
-        MODEL_FOR_CAUSAL_LM_MAPPING,
-        ["llama"],
-    ),
-    "run_sequence_classification": _get_supported_models_for_script(
-        MODELS_TO_TEST_MAPPING,
-        MODEL_MAPPING,
-        ["protst"],
-    ),
 }
 
 
@@ -204,31 +186,24 @@ class ExampleTestMeta(type):
             "tiiuae/falcon-40b",
             "bigscience/bloom-7b1",
             "codellama/CodeLlama-13b-Instruct-hf",
-            "MIT/ast-finetuned-speech-commands-v2",
-            "meta-llama/LlamaGuard-7b",
         ]
 
-        if fsdp and not IS_GAUDI2:
+        if fsdp and os.environ.get("GAUDI2_CI", "0") == "0":
             return False
-        elif (
-            "sft" in example_name
-            or "dpo" in example_name
-            or "prompt_tuning" in example_name
-            or example_name == "run_sequence_classification"
-        ) and not IS_GAUDI2:
+        elif ("sft" in example_name or "dpo" in example_name) and os.environ.get("GAUDI2_CI", "0") == "0":
             return False
         elif model_name not in models_with_specific_rules and not deepspeed:
             return True
         elif model_name == "gpt2-xl" and deepspeed:
             # GPT2-XL is tested only with DeepSpeed
             return True
-        elif "gpt-neox" in model_name and IS_GAUDI2 and deepspeed:
+        elif "gpt-neox" in model_name and os.environ.get("GAUDI2_CI", "0") == "1" and deepspeed:
             # GPT-NeoX is tested only on Gaudi2 and with DeepSpeed
             return True
-        elif "flan-t5" in model_name and IS_GAUDI2 and deepspeed:
+        elif "flan-t5" in model_name and os.environ.get("GAUDI2_CI", "0") == "1" and deepspeed:
             # Flan-T5 is tested only on Gaudi2 and with DeepSpeed
             return True
-        elif "CodeLlama" in model_name and IS_GAUDI2 and deepspeed:
+        elif "CodeLlama" in model_name and os.environ.get("GAUDI2_CI", "0") == "1" and deepspeed:
             # CodeLlama is tested only on Gaudi2 and with DeepSpeed
             return True
         elif model_name == "albert-xxlarge-v1":
@@ -239,15 +214,11 @@ class ExampleTestMeta(type):
             return True
         elif "wav2vec2-large" in model_name and example_name == "run_speech_recognition_ctc":
             return True
-        elif "bridgetower" in model_name and IS_GAUDI2:
+        elif "bridgetower" in model_name and os.environ.get("GAUDI2_CI", "0") == "1":
             return True
-        elif "falcon" in model_name and IS_GAUDI2 and not fsdp:
+        elif "falcon" in model_name and os.environ.get("GAUDI2_CI", "0") == "1" and not fsdp:
             return True
-        elif "bloom" in model_name and deepspeed and not IS_GAUDI2:
-            return True
-        elif "LlamaGuard" in model_name and deepspeed and IS_GAUDI2:
-            return True
-        elif "ast-finetuned-speech-commands-v2" in model_name and IS_GAUDI2:
+        elif "bloom" in model_name and deepspeed and os.environ.get("GAUDI2_CI", "0") == "0":
             return True
 
         return False
@@ -262,7 +233,7 @@ class ExampleTestMeta(type):
         if example_name is not None:
             models_to_test = _SCRIPT_TO_MODEL_MAPPING.get(example_name)
             if models_to_test is None:
-                if example_name in ["run_esmfold", "run_lora_clm", "run_zero_shot_eval"]:
+                if example_name in ["run_esmfold", "run_lora_clm"]:
                     attrs[f"test_{example_name}_{distribution}"] = cls._create_test(None, None, None, None, None)
                     attrs["EXAMPLE_NAME"] = example_name
                     return super().__new__(cls, name, bases, attrs)
@@ -316,27 +287,9 @@ class ExampleTestMeta(type):
             if self.EXAMPLE_NAME == "run_esmfold":
                 p = subprocess.Popen(["python3", example_script])
                 return_code = p.wait()
+
                 # Ensure the run finished without any issue
                 self.assertEqual(return_code, 0)
-                return
-            elif self.EXAMPLE_NAME == "run_zero_shot_eval":
-                with TemporaryDirectory() as tmp_dir:
-                    cmd_line = f"""
-                        python3
-                        {example_script}
-                        --output_dir {tmp_dir}
-                        --bf16
-                        --max_seq_length 1024
-                    """.split()
-                    p = subprocess.Popen(cmd_line)
-                    return_code = p.wait()
-                    # Ensure the run finished without any issue
-                    self.assertEqual(return_code, 0)
-                    # Assess accuracy
-                    with open(Path(tmp_dir) / "accuracy_metrics.json") as fp:
-                        results = json.load(fp)
-                        baseline = 0.43 if os.environ.get("GAUDI2_CI", "0") == "1" else 0.42
-                        self.assertGreaterEqual(results["accuracy"], baseline)
                 return
             elif self.EXAMPLE_NAME == "run_clip":
                 if os.environ.get("DATA_CACHE", None) is None:
@@ -353,7 +306,7 @@ class ExampleTestMeta(type):
                 ".json"
             )
             with path_to_baseline.open("r") as json_file:
-                device = "gaudi2" if IS_GAUDI2 else "gaudi"
+                device = "gaudi2" if os.environ.get("GAUDI2_CI", "0") == "1" else "gaudi"
                 baseline = json.load(json_file)[device]
                 if isinstance(self.TASK_NAME, list):
                     for key in self.TASK_NAME:
@@ -601,13 +554,6 @@ class MultiCardTextClassificationExampleTester(
     DATASET_PARAMETER_NAME = "task_name"
 
 
-class DeepSpeedTextClassificationExampleTester(
-    ExampleTesterBase, metaclass=ExampleTestMeta, example_name="run_glue", deepspeed=True
-):
-    TASK_NAME = "mrpc"
-    DATASET_PARAMETER_NAME = "task_name"
-
-
 class QuestionAnsweringExampleTester(ExampleTesterBase, metaclass=ExampleTestMeta, example_name="run_qa"):
     TASK_NAME = "squad"
 
@@ -693,10 +639,6 @@ class ProteinFoldingExampleTester(ExampleTesterBase, metaclass=ExampleTestMeta, 
     pass
 
 
-class ProteinFoldingExampleTester2(ExampleTesterBase, metaclass=ExampleTestMeta, example_name="run_zero_shot_eval"):
-    pass
-
-
 class MultiCardCausalLanguageModelingLORAExampleTester(
     ExampleTesterBase, metaclass=ExampleTestMeta, example_name="run_lora_clm", multi_card=True
 ):
@@ -734,31 +676,3 @@ class MultiCardSFTExampleTester(ExampleTesterBase, metaclass=ExampleTestMeta, ex
 class MultiCardDPOExampleTester(ExampleTesterBase, metaclass=ExampleTestMeta, example_name="dpo", multi_card=True):
     TASK_NAME = "trl-dpo"
     DATASET_NAME = "lvwerra/stack-exchange-paired"
-
-
-class MultiCardProteinFoldingClassificationTester(
-    ExampleTesterBase, metaclass=ExampleTestMeta, example_name="run_sequence_classification", multi_card=True
-):
-    TASK_NAME = "prost-sequence-classification"
-    DATASET_NAME = "mila-intel/ProtST-BinaryLocalization"
-
-
-class MultiCardCausalLanguageModelingPromptTuningExampleTester(
-    ExampleTesterBase, metaclass=ExampleTestMeta, example_name="run_prompt_tuning_clm", multi_card=True
-):
-    TASK_NAME = ["prompt-tuning"]
-    DATASET_NAME = "ought/raft"
-
-
-class MultiCardCausalLanguageModelingPrefixTuningExampleTester(
-    ExampleTesterBase, metaclass=ExampleTestMeta, example_name="run_prompt_tuning_clm", multi_card=True
-):
-    TASK_NAME = ["prefix-tuning"]
-    DATASET_NAME = "ought/raft"
-
-
-class MultiCardCausalLanguageModelingPTuningExampleTester(
-    ExampleTesterBase, metaclass=ExampleTestMeta, example_name="run_prompt_tuning_clm", multi_card=True
-):
-    TASK_NAME = ["p-tuning"]
-    DATASET_NAME = "ought/raft"

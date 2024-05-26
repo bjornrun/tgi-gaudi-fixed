@@ -37,7 +37,7 @@ FROM vault.habana.ai/gaudi-docker/1.15.1/ubuntu22.04/habanalabs/pytorch-installe
 ENV HUGGINGFACE_HUB_CACHE=/data \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
     PORT=80 \
-    HF_TOKEN=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 
+    HF_TOKEN=...
 
 # libssl.so.1.1 is not installed on Ubuntu 22.04 by default, install it
 RUN wget http://nz2.archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2_amd64.deb && \
@@ -61,7 +61,6 @@ RUN cd server && \
     pip install -r requirements.txt && \
     bash ./dill-0.3.8-patch.sh && \
     pip install ./DeepSpeed \
-    pip install ./optimum-habana \
     pip install . --no-cache-dir
 
 # Install benchmarker

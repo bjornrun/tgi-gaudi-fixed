@@ -315,7 +315,6 @@ class GaudiLlamaAttention(LlamaAttention):
         flash_attention_recompute: Optional[bool] = False,
         flash_attention_causal_mask: Optional[bool] = False,
         cache_idx: int = None,
-        num_virtual_tokens: int = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         """
@@ -328,7 +327,6 @@ class GaudiLlamaAttention(LlamaAttention):
         - add new args use_flash_attention
         - add new arg flash_attention_recompute
         - add new arg flash_attention_causal_mask
-        - add new arg num_virtual_tokens
         """
         bsz, q_len, _ = hidden_states.size()
 
@@ -366,23 +364,17 @@ class GaudiLlamaAttention(LlamaAttention):
                 else:
                     kv_seq_len += past_key_value[0].shape[-2]
             else:
-                if reuse_cache and not isinstance(past_key_value[0], torch.Tensor):
+                if reuse_cache:
                     kv_seq_len = past_key_value[0][-2]
                 else:
-                    if num_virtual_tokens is not None and num_virtual_tokens == past_key_value[0].shape[-2]:
-                        kv_seq_len = past_key_value[0].shape[-2] + kv_seq_len
-                    else:
-                        kv_seq_len = past_key_value[0].shape[-2]
+                    kv_seq_len = past_key_value[0].shape[-2]
 
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
         query_states, key_states = apply_customized_rope(query_states, key_states, cos, sin, position_ids)
+
         if use_cache:
             # reuse k, v, self_attention
             if reuse_cache:
-                if past_key_value is not None and isinstance(past_key_value[0], torch.Tensor):
-                    # prefix tuning case. attach past_key_value to generate first token.
-                    key_states = torch.cat((past_key_value[0], key_states), -2)
-                    value_states = torch.cat((past_key_value[1], value_states), -2)
                 key_states = self.k_cache(key_states, 2, token_idx)
                 value_states = self.v_cache(value_states, 2, token_idx)
                 past_key_value = (self.k_cache.get_shape(), self.v_cache.get_shape())
@@ -393,19 +385,8 @@ class GaudiLlamaAttention(LlamaAttention):
                         key_states.shape, dtype=self.k_proj.weight.dtype, device=key_states.device
                     )
                     past_key_value = (past_key, past_value)
-                if (
-                    token_idx is not None
-                    and num_virtual_tokens is not None
-                    and num_virtual_tokens == past_key_value[0].shape[-2]
-                ):
-                    # prefix tunining case. attach past_key_value to generate first token.
-                    key_states = torch.cat((past_key_value[0], key_states), -2)
-                    value_states = torch.cat((past_key_value[1], value_states), -2)
-                    past_key_value = (key_states, value_states)
-                else:
-                    key_states = self.k_cache.update(past_key_value[0], key_states, 2, token_idx, self.inp_seq_len)
-                    value_states = self.v_cache.update(past_key_value[1], value_states, 2, token_idx, self.inp_seq_len)
-
+                key_states = self.k_cache.update(past_key_value[0], key_states, 2, token_idx, self.inp_seq_len)
+                value_states = self.v_cache.update(past_key_value[1], value_states, 2, token_idx, self.inp_seq_len)
                 if token_idx is None:
                     past_key_value = (key_states, value_states)
 
@@ -526,7 +507,6 @@ class GaudiLlamaDecoderLayer(LlamaDecoderLayer):
         flash_attention_recompute: Optional[bool] = False,
         flash_attention_causal_mask: Optional[bool] = False,
         cache_idx: int = None,
-        num_virtual_tokens: int = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
@@ -560,7 +540,6 @@ class GaudiLlamaDecoderLayer(LlamaDecoderLayer):
             flash_attention_recompute=flash_attention_recompute,
             flash_attention_causal_mask=flash_attention_causal_mask,
             cache_idx=cache_idx,
-            num_virtual_tokens=num_virtual_tokens,
             **kwargs,
         )
         self.self_attn.attention_all_reduce(hidden_states)
@@ -593,7 +572,6 @@ class GaudiLlamaDecoderLayer(LlamaDecoderLayer):
         flash_attention_recompute: Optional[bool] = False,
         flash_attention_causal_mask: Optional[bool] = False,
         cache_idx: int = None,
-        num_virtual_tokens: int = None,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         hidden_states = self.input_layernorm(hidden_states)
         hidden_states, attn_weights, present_key_value = self.self_attn.pre_attn_forward(
@@ -611,7 +589,6 @@ class GaudiLlamaDecoderLayer(LlamaDecoderLayer):
             flash_attention_recompute,
             flash_attention_causal_mask,
             cache_idx=cache_idx,
-            num_virtual_tokens=num_virtual_tokens,
         )
         return hidden_states, attn_weights, present_key_value
 
@@ -706,7 +683,6 @@ class GaudiLlamaModel(LlamaModel):
         flash_attention_causal_mask: Optional[bool] = False,
         cache_idx: int = None,
         lazy_mode: Optional[bool] = True,
-        num_virtual_tokens: int = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         """
         Copied from LlamaModel.forward: https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
@@ -751,10 +727,7 @@ class GaudiLlamaModel(LlamaModel):
 
         if past_key_values is not None and use_cache:  # kept for BC (cache positions)
             if reuse_cache:
-                if isinstance(past_key_values[0][0], torch.Tensor):
-                    past_seen_tokens = past_key_values[0][0].shape[2]
-                else:
-                    past_seen_tokens = past_key_values[0][0][2]
+                past_seen_tokens = past_key_values[0][0][2]
             else:
                 if use_new_cache:
                     if not isinstance(past_key_values, StaticCache):
@@ -844,7 +817,6 @@ class GaudiLlamaModel(LlamaModel):
                     flash_attention_recompute=flash_attention_recompute,
                     flash_attention_causal_mask=flash_attention_causal_mask,
                     cache_idx=cache_idx,
-                    num_virtual_tokens=num_virtual_tokens,
                 )
             hidden_states = layer_outputs[0]
 
@@ -918,7 +890,6 @@ class GaudiLlamaForCausalLM(LlamaForCausalLM):
         flash_attention_causal_mask: Optional[bool] = False,
         cache_idx: int = None,
         lazy_mode: Optional[bool] = True,
-        num_virtual_tokens: int = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -949,7 +920,6 @@ class GaudiLlamaForCausalLM(LlamaForCausalLM):
             flash_attention_causal_mask=flash_attention_causal_mask,
             cache_idx=cache_idx,
             lazy_mode=lazy_mode,
-            num_virtual_tokens=num_virtual_tokens,
         )
         hidden_states = outputs[0]
         _, seq_len, _ = hidden_states.shape
@@ -1085,7 +1055,6 @@ class GaudiLlamaForCausalLM(LlamaForCausalLM):
                 "flash_attention_causal_mask": kwargs.get("flash_attention_causal_mask"),
                 "cache_idx": kwargs.get("cache_idx"),
                 "lazy_mode": kwargs.get("lazy_mode"),
-                "num_virtual_tokens": kwargs.get("num_virtual_tokens"),
             }
         )
         return model_inputs
