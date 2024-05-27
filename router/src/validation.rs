@@ -1,26 +1,17 @@
 /// Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 
-use crate::config::Config;
 /// Payload validation logic
 use crate::validation::ValidationError::{BestOfSampling, BestOfSeed, EmptyInput};
-use crate::{GenerateParameters, GenerateRequest, GrammarType};
-use jsonschema::{Draft, JSONSchema};
+use crate::{GenerateParameters, GenerateRequest};
 use rand::{thread_rng, Rng};
-use std::{cmp, env};
-use serde_json::Value;
-use std::io::Cursor;
-use text_generation_client::{
-    GrammarType as ProtoGrammarType, NextTokenChooserParameters, StoppingCriteriaParameters,
-};
+use std::env;
+use text_generation_client::{NextTokenChooserParameters, StoppingCriteriaParameters};
 use thiserror::Error;
 use tokenizers::tokenizer::Tokenizer;
-// use tokenizers::TruncationDirection;
-use base64::{engine::general_purpose::STANDARD, Engine};
-use image::{io::Reader as ImageReader, ImageFormat};
+use tokenizers::TruncationDirection;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::{instrument, Span};
-use {once_cell::sync::Lazy, regex::Regex};
 
 /// Validation
 #[derive(Debug, Clone)]
@@ -31,24 +22,20 @@ pub struct Validation {
     max_top_n_tokens: u32,
     max_input_length: usize,
     max_total_tokens: usize,
-    disable_grammar_support: bool,
     /// Channel to communicate with the background tokenization task
     sender: Option<mpsc::UnboundedSender<TokenizerRequest>>,
     skip_tokenizer_in_tgi: bool,
 }
 
 impl Validation {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         workers: usize,
         tokenizer: Option<Tokenizer>,
-        config: Option<Config>,
         max_best_of: usize,
         max_stop_sequences: usize,
         max_top_n_tokens: u32,
         max_input_length: usize,
         max_total_tokens: usize,
-        disable_grammar_support: bool,
     ) -> Self {
         // If we have a fast tokenizer
         let sender = if let Some(tokenizer) = tokenizer {
@@ -59,13 +46,12 @@ impl Validation {
             // Create workers
             for _ in 0..workers {
                 let tokenizer_clone = tokenizer.clone();
-                let config_clone = config.clone();
                 let (tokenizer_sender, tokenizer_receiver) = mpsc::unbounded_channel();
                 senders.push(tokenizer_sender);
 
                 // Spawn worker
                 tokio::task::spawn_blocking(move || {
-                    tokenizer_worker(tokenizer_clone, config_clone, tokenizer_receiver)
+                    tokenizer_worker(tokenizer_clone, tokenizer_receiver)
                 });
             }
 
@@ -88,17 +74,17 @@ impl Validation {
             max_top_n_tokens,
             max_input_length,
             max_total_tokens,
-            disable_grammar_support,
             skip_tokenizer_in_tgi,
         }
     }
 
     #[instrument(skip(self, inputs))]
-    pub async fn tokenize(
+    async fn validate_input(
         &self,
         inputs: String,
         truncate: Option<usize>,
-    ) -> Result<Option<(tokenizers::Encoding, String)>, ValidationError> {
+        max_new_tokens: Option<u32>,
+    ) -> Result<(String, usize, u32), ValidationError> {
         // If we have a fast tokenizer
         if let Some(sender) = &self.sender {
             // Create response channel
@@ -111,30 +97,12 @@ impl Validation {
 
             // Await on response channel
             // Unwrap is safe here
-            let encoding = response_receiver.await.unwrap()?;
-            Ok(Some(encoding))
-        } else {
-            Ok(None)
-        }
-    }
+            let (inputs, _) = response_receiver.await.unwrap()?;
 
-    #[instrument(skip(self, inputs))]
-    async fn validate_input(
-        &self,
-        inputs: String,
-        truncate: Option<usize>,
-        max_new_tokens: Option<u32>,
-    ) -> Result<(String, usize, u32), ValidationError> {
-        // If we have a fast tokenizer
-        if let Some((encoding, inputs)) = self.tokenize(inputs.clone(), truncate).await? {
-            // Create response channel
             let input_length = if self.skip_tokenizer_in_tgi {
                 inputs.chars().filter(|&c| c == ',').count() + 1
             } else {
-                cmp::max(
-                    encoding.len(),
-                    truncate.unwrap_or(self.max_input_length)
-                )
+                truncate.unwrap_or(self.max_input_length)
             };
 
             // Get total tokens
@@ -205,7 +173,6 @@ impl Validation {
             best_of,
             temperature,
             repetition_penalty,
-            frequency_penalty,
             top_k,
             top_p,
             typical_p,
@@ -217,7 +184,6 @@ impl Validation {
             watermark,
             decoder_input_details,
             top_n_tokens,
-            grammar,
             ..
         } = request.parameters;
 
@@ -243,17 +209,12 @@ impl Validation {
             return Err(ValidationError::RepetitionPenalty);
         }
 
-        let frequency_penalty = frequency_penalty.unwrap_or(0.0);
-        if !(-2.0..=2.0).contains(&frequency_penalty) {
-            return Err(ValidationError::FrequencyPenalty);
-        }
-
         // TODO: enable watermark with fp8 quantization
         let quantization_enabled = env::var("QUANT_CONFIG")
             .ok()
             .map_or(false, |value| !value.is_empty());
         if watermark && quantization_enabled {
-            return Err(ValidationError::WatermarkWithQuantization);
+            return Err(ValidationError::WatermarkWithQuantization)
         }
 
         // Different because the proto default value is not a valid value
@@ -336,61 +297,15 @@ impl Validation {
             .validate_input(request.inputs, truncate, max_new_tokens)
             .await?;
 
-        // TODO: we should build the FSM here and pass the compiled FSM instead of the grammar
-        // NOTE: this is currently difficult because we need the tokenizer in Python to build
-        // the FSM and we'd have to load a copy of the tokenizer into our Pyo3 instance which
-        // may be slow and memory intensive. Best case is to have a Rust implementation of the FSM
-        // compiler and use that to build the FSM here.
-
-        // Validate grammar and unpack the grammar and type for the proto message
-        let (grammar, grammar_type) = match grammar {
-            Some(grammar) => {
-                // Ensure that grammar is not set if it's not supported
-                if self.disable_grammar_support {
-                    return Err(ValidationError::Grammar);
-                }
-                match grammar {
-                    GrammarType::Json(json) => {
-                        let json = match json {
-                            // if value is a string, we need to parse it again to make sure its
-                            // a valid json
-                            Value::String(s) => serde_json::from_str(&s)
-                                .map_err(|e| ValidationError::InvalidGrammar(e.to_string())),
-                            Value::Object(_) => Ok(json),
-                            _ => Err(ValidationError::Grammar),
-                        }?;
-
-                        // Check if the json is a valid JSONSchema
-                        JSONSchema::options()
-                            .with_draft(Draft::Draft202012)
-                            .compile(&json)
-                            .map_err(|e| ValidationError::InvalidGrammar(e.to_string()))?;
-
-                        (
-                            // Serialize json to string
-                            serde_json::to_string(&json)
-                                .map_err(|e| ValidationError::InvalidGrammar(e.to_string()))?,
-                            ProtoGrammarType::Json.into(),
-                        )
-                    }
-                    GrammarType::Regex(regex) => (regex, ProtoGrammarType::Regex.into()),
-                }
-            }
-            None => (String::new(), ProtoGrammarType::None.into()),
-        };
-
         let parameters = NextTokenChooserParameters {
             temperature,
             repetition_penalty,
-            frequency_penalty,
             top_k,
             top_p,
             typical_p,
             do_sample,
             seed,
             watermark,
-            grammar,
-            grammar_type,
         };
         let stopping_parameters = StoppingCriteriaParameters {
             max_new_tokens,
@@ -442,148 +357,53 @@ async fn round_robin_task(
 }
 
 /// Start tokenization workers
-fn tokenizer_worker(
-    tokenizer: Tokenizer,
-    config: Option<Config>,
-    mut receiver: mpsc::UnboundedReceiver<TokenizerRequest>,
-) {
+fn tokenizer_worker(tokenizer: Tokenizer, mut receiver: mpsc::UnboundedReceiver<TokenizerRequest>) {
     // Loop over requests
     while let Some(((inputs, truncate), response_tx, parent_span)) = receiver.blocking_recv() {
         parent_span.in_scope(|| {
             response_tx
-                .send(prepare_input(inputs, truncate, &tokenizer, &config))
+                .send(prepare_input(inputs, truncate, &tokenizer))
                 .unwrap_or(())
         })
     }
 }
 
-fn format_from_mimetype(mimetype: &str) -> Option<ImageFormat> {
-    match mimetype {
-        "image/png" => Some(ImageFormat::Png),
-        "image/jpeg" => Some(ImageFormat::Jpeg),
-        "image/jpg" => Some(ImageFormat::Jpeg),
-        "image/gif" => Some(ImageFormat::Gif),
-        "image/webp" => Some(ImageFormat::WebP),
-        "image/tiff" => Some(ImageFormat::Tiff),
-        // "image/pnm"=>Some(ImageFormat::Pnm),
-        // "image/tga"=>Some(ImageFormat::Tga),
-        // "image/dds"=>Some(ImageFormat::Dds),
-        // "image/bmp"=>Some(ImageFormat::Bmp),
-        // "image/ico"=>Some(ImageFormat::Ico),
-        // "image/x-exr"=>Some(ImageFormat::OpenExr),
-        _ => None,
-    }
-}
-fn format_to_mimetype(format: ImageFormat) -> String {
-    match format {
-        ImageFormat::Png => "image/png",
-        ImageFormat::Jpeg => "image/jpeg",
-        ImageFormat::Gif => "image/gif",
-        ImageFormat::WebP => "image/webp",
-        ImageFormat::Tiff => "image/tiff",
-        _ => "application/octet-stream",
-    }
-    .to_string()
-}
-
-fn fetch_image(input: &str) -> Result<(String, usize, usize), ValidationError> {
-    if input.starts_with("![](http://") || input.starts_with("![](https://") {
-        let url = &input["![](".len()..input.len() - 1];
-        let data = reqwest::blocking::get(url)?.bytes()?;
-
-        let format = image::guess_format(&data)?;
-        // TODO Remove this clone
-        let img = ImageReader::with_format(Cursor::new(data.clone()), format).decode()?;
-        let height: usize = img.height().try_into()?;
-        let width: usize = img.width().try_into()?;
-        let mimetype = format_to_mimetype(format);
-        let encoded = STANDARD.encode(data);
-        let data_uri = format!("![](data:{mimetype};base64,{encoded})");
-        Ok((data_uri, height, width))
-    } else if input.starts_with("![](data:") {
-        // Remove ![](....)
-        let content = &input["![](data:".len()..input.len() - 1];
-        let tokens: Vec<_> = content.split(';').collect();
-        if tokens.len() != 2 {
-            return Err(ValidationError::InvalidImageContent(content.to_string()));
-        }
-        let mimetype = tokens[0];
-        let content = tokens[1];
-
-        if !content.starts_with("base64,") {
-            return Err(ValidationError::InvalidImageContent(content.to_string()));
-        }
-
-        let data = STANDARD.decode(content["base64,".len()..].as_bytes())?;
-        let img = if let Some(format) = format_from_mimetype(mimetype) {
-            ImageReader::with_format(Cursor::new(data), format).decode()?
-        } else {
-            ImageReader::new(Cursor::new(data))
-                .with_guessed_format()
-                .map_err(|_io_error| ValidationError::InvalidImageContent(content.to_string()))?
-                .decode()?
-        };
-
-        let height: usize = img.height().try_into()?;
-        let width: usize = img.width().try_into()?;
-        Ok((input.to_string(), height, width))
-    } else {
-        Err(ValidationError::InvalidImageContent(input.to_string()))
-    }
-}
-
 /// Get input length and optionally truncate it
 fn prepare_input(
-    mut inputs: String,
-    _truncate: Option<usize>,
+    inputs: String,
+    truncate: Option<usize>,
     tokenizer: &Tokenizer,
-    config: &Option<Config>,
-) -> Result<(tokenizers::Encoding, String), ValidationError> {
-    static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"!\[\]\([^\)]*\)").unwrap());
-    let tokenizer_query = match config {
-        Some(Config::LlavaNext(config)) => {
-            let mut modified_inputs = String::with_capacity(inputs.len());
-            let mut tokenizer_query = String::with_capacity(inputs.len());
-            let mut start = 0;
-            for chunk in RE.find_iter(&inputs) {
-                let chunk_start = chunk.start();
-                let chunk_end = chunk.end();
-                if chunk_start != start {
-                    modified_inputs.push_str(&inputs[start..chunk_start]);
-                    tokenizer_query.push_str(&inputs[start..chunk_start]);
-                }
-                let (image_uri, height, width) = fetch_image(&inputs[chunk_start..chunk_end])?;
-                let slots = config.get_number_of_features(height, width);
-                tokenizer_query.push_str(&"<image>".repeat(slots));
-                modified_inputs.push_str(&image_uri);
-                start = chunk_end;
-            }
-            if start != inputs.len() - 1 {
-                modified_inputs.push_str(&inputs[start..]);
-                tokenizer_query.push_str(&inputs[start..]);
-            }
-            inputs = modified_inputs;
-            tokenizer_query
-        }
-        Some(Config::Idefics) => RE.replace_all(&inputs, "<image>").into(),
-        _ => inputs.clone(),
-    };
-
+) -> Result<(String, usize), ValidationError> {
     // Get the number of tokens in the input
-    let encoding = tokenizer
-        .encode(tokenizer_query, true)
+    let mut encoding = tokenizer
+        .encode(inputs.clone(), true)
         .map_err(|err| ValidationError::Tokenizer(err.to_string()))?;
 
-    Ok((encoding, inputs))
+    // Optionally truncate
+    let (inputs, input_length) = match truncate {
+        // Truncate is some and < encoding length
+        Some(truncate) if truncate < encoding.len() => {
+            // truncate encoding and decode new inputs
+            encoding.truncate(truncate, 0, TruncationDirection::Left);
+            let inputs = tokenizer
+                .decode(encoding.get_ids(), false)
+                .map_err(|err| ValidationError::Tokenizer(err.to_string()))?;
+            (inputs, encoding.len())
+        }
+        // Nothing to do
+        _ => (inputs, encoding.len()),
+    };
+
+    Ok((inputs, input_length))
 }
 
 type TokenizerRequest = (
     (String, Option<usize>),
-    oneshot::Sender<Result<(tokenizers::Encoding, String), ValidationError>>,
+    oneshot::Sender<Result<(String, usize), ValidationError>>,
     Span,
 );
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ValidGenerateRequest {
     pub inputs: String,
     pub input_length: u32,
@@ -616,8 +436,6 @@ pub enum ValidationError {
     Temperature,
     #[error("`repetition_penalty` must be strictly positive")]
     RepetitionPenalty,
-    #[error("`frequency_penalty` must be >= -2.0 and <= 2.0")]
-    FrequencyPenalty,
     #[error("`top_p` must be > 0.0 and < 1.0")]
     TopP,
     #[error("`top_k` must be strictly positive")]
@@ -642,20 +460,6 @@ pub enum ValidationError {
     StopSequence(usize, usize),
     #[error("tokenizer error {0}")]
     Tokenizer(String),
-    #[error("grammar is not supported")]
-    Grammar,
-    #[error("grammar is not valid: {0}")]
-    InvalidGrammar(String),
-    #[error("base64 encoding is invalid: {0}")]
-    InvalidBase64(#[from] base64::DecodeError),
-    #[error("invalid image: {0}")]
-    InvalidImage(#[from] image::ImageError),
-    #[error("invalid integer: {0}")]
-    InvalidInt(#[from] core::num::TryFromIntError),
-    #[error("invalid image content: {0}")]
-    InvalidImageContent(String),
-    #[error("Could not fetch image: {0}")]
-    FailedFetchImage(#[from] reqwest::Error),
     #[error("`watermark` = true is not allowed with FP8 quantization.")]
     WatermarkWithQuantization,
 }
@@ -675,18 +479,14 @@ mod tests {
         let max_input_length = 5;
         let max_total_tokens = 6;
         let workers = 1;
-        let disable_grammar_support = true;
-        let config = None;
         let validation = Validation::new(
             workers,
             tokenizer,
-            config,
             max_best_of,
             max_stop_sequence,
             max_top_n_tokens,
             max_input_length,
             max_total_tokens,
-            disable_grammar_support,
         );
 
         let max_new_tokens = 10;
@@ -695,7 +495,7 @@ mod tests {
             .await
         {
             Err(ValidationError::MaxNewTokens(1, 10)) => (),
-            r => panic!("Unexpected not max new tokens: {r:?}"),
+            _ => panic!("Unexpected not max new tokens"),
         }
     }
 
@@ -707,19 +507,15 @@ mod tests {
         let max_top_n_tokens = 4;
         let max_input_length = 5;
         let max_total_tokens = 6;
-        let disable_grammar_support = true;
         let workers = 1;
-        let config = None;
         let validation = Validation::new(
             workers,
             tokenizer,
-            config,
             max_best_of,
             max_stop_sequence,
             max_top_n_tokens,
             max_input_length,
             max_total_tokens,
-            disable_grammar_support,
         );
 
         let max_new_tokens = 10;
@@ -741,18 +537,14 @@ mod tests {
         let max_input_length = 5;
         let max_total_tokens = 6;
         let workers = 1;
-        let disable_grammar_support = true;
-        let config = None;
         let validation = Validation::new(
             workers,
             tokenizer,
-            config,
             max_best_of,
             max_stop_sequence,
             max_top_n_tokens,
             max_input_length,
             max_total_tokens,
-            disable_grammar_support,
         );
         match validation
             .validate(GenerateRequest {
@@ -777,27 +569,22 @@ mod tests {
         let max_stop_sequence = 3;
         let max_top_n_tokens = 4;
         let max_input_length = 5;
-        let max_total_tokens = 106;
+        let max_total_tokens = 6;
         let workers = 1;
-        let disable_grammar_support = true;
-        let config = None;
         let validation = Validation::new(
             workers,
             tokenizer,
-            config,
             max_best_of,
             max_stop_sequence,
             max_top_n_tokens,
             max_input_length,
             max_total_tokens,
-            disable_grammar_support,
         );
         match validation
             .validate(GenerateRequest {
                 inputs: "Hello".to_string(),
                 parameters: GenerateParameters {
                     top_p: Some(1.0),
-                    max_new_tokens: Some(5),
                     ..default_parameters()
                 },
             })
@@ -812,7 +599,6 @@ mod tests {
                 inputs: "Hello".to_string(),
                 parameters: GenerateParameters {
                     top_p: Some(0.99),
-                    max_new_tokens: Some(5),
                     ..default_parameters()
                 },
             })
@@ -827,7 +613,6 @@ mod tests {
                 inputs: "Hello".to_string(),
                 parameters: GenerateParameters {
                     top_p: None,
-                    max_new_tokens: Some(5),
                     ..default_parameters()
                 },
             })
@@ -844,27 +629,22 @@ mod tests {
         let max_stop_sequences = 3;
         let max_top_n_tokens = 4;
         let max_input_length = 5;
-        let max_total_tokens = 106;
+        let max_total_tokens = 6;
         let workers = 1;
-        let disable_grammar_support = true;
-        let config = None;
         let validation = Validation::new(
             workers,
             tokenizer,
-            config,
             max_best_of,
             max_stop_sequences,
             max_top_n_tokens,
             max_input_length,
             max_total_tokens,
-            disable_grammar_support,
         );
         match validation
             .validate(GenerateRequest {
                 inputs: "Hello".to_string(),
                 parameters: GenerateParameters {
                     top_n_tokens: Some(5),
-                    max_new_tokens: Some(5),
                     ..default_parameters()
                 },
             })
@@ -879,7 +659,6 @@ mod tests {
                 inputs: "Hello".to_string(),
                 parameters: GenerateParameters {
                     top_n_tokens: Some(4),
-                    max_new_tokens: Some(5),
                     ..default_parameters()
                 },
             })
@@ -891,7 +670,6 @@ mod tests {
                 inputs: "Hello".to_string(),
                 parameters: GenerateParameters {
                     top_n_tokens: Some(0),
-                    max_new_tokens: Some(5),
                     ..default_parameters()
                 },
             })
@@ -903,7 +681,6 @@ mod tests {
                 inputs: "Hello".to_string(),
                 parameters: GenerateParameters {
                     top_n_tokens: None,
-                    max_new_tokens: Some(5),
                     ..default_parameters()
                 },
             })
