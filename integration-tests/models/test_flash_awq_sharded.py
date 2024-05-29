@@ -18,6 +18,7 @@ async def flash_llama_awq_sharded(flash_llama_awq_handle_sharded):
 
 
 @pytest.mark.asyncio
+@pytest.mark.private
 async def test_flash_llama_awq_sharded(flash_llama_awq_sharded, response_snapshot):
     response = await flash_llama_awq_sharded.generate(
         "What is Deep Learning?", max_new_tokens=10, decoder_input_details=True
@@ -32,6 +33,7 @@ async def test_flash_llama_awq_sharded(flash_llama_awq_sharded, response_snapsho
 
 
 @pytest.mark.asyncio
+@pytest.mark.private
 async def test_flash_llama_awq_load_sharded(
     flash_llama_awq_sharded, generate_load, response_snapshot
 ):

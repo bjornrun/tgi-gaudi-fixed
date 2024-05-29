@@ -7,7 +7,6 @@ import itertools
 import math
 import os
 import tempfile
-import time
 from typing import Dict, List, Optional, Tuple, Type
 
 import torch
@@ -33,12 +32,12 @@ from transformers import (
 
 from text_generation_server.utils.tokens import batch_top_tokens
 from text_generation_server.models import Model
-from text_generation_server.utils.tokens import batch_top_tokens
 from text_generation_server.models.types import (
     Batch,
-    Tokens,
+    PrefillTokens,
     Generation,
     GeneratedText,
+    TopTokens,
 )
 from text_generation_server.pb import generate_pb2
 from text_generation_server.utils import (
@@ -48,7 +47,6 @@ from text_generation_server.utils import (
     is_tokenizer_transparent,
 )
 from text_generation_server.utils.debug import dbg_trace
-from text_generation_server.utils.speculate import get_speculate
 
 tracer = trace.get_tracer(__name__)
 
@@ -358,7 +356,7 @@ class CausalLMBatch(Batch):
 
         moves_needed = [total_requests - len(b) if b.batch_size == new_bs else total_requests for b in batches]
         dst_batch_idx = min(enumerate(moves_needed), key=lambda idx_val: idx_val[1])[0]
-        reshape = (batches[dst_batch_idx].batch_size < new_bs)
+        reshape = (batches[dst_batch_idx].batch_size != new_bs)
 
         # TODO: Add support for changing max seq len, i.e. due to output length bucketing
         # FIXME: max_seq_len for non optimized code
@@ -397,24 +395,16 @@ class CausalLMBatch(Batch):
         top_n_tokens_tensor = torch.tensor(top_n_tokens, device=device, dtype=torch.int64)
 
         parameters = [r.data.parameters for r in flat_requests]
-        # append the dummy parameters for dummy requests
-        batch_size = batches[dst_batch_idx].batch_size
-        parameters.extend(
-            [generate_pb2.NextTokenChooserParameters()] * (batch_size - len(flat_requests))
-        )
-
-        fsm_grammar_states = [0] * batch_size
-        for batch in batches:
-            for i, req in enumerate(batch.requests):
-                fsm_grammar_states[req.idx] = batch.next_token_chooser.fsm_grammar_states[i]
+        if len(flat_requests) < new_bs:
+            for i in range(new_bs-len(flat_requests)) :
+                # append the dummy parameters for dummy request
+                parameters.append(parameters[0])
 
         next_token_chooser = HeterogeneousNextTokenChooser.from_pb(
             parameters,
             batches[dst_batch_idx].next_token_chooser.dtype,
             batches[dst_batch_idx].next_token_chooser.device,
-            batches[dst_batch_idx].next_token_chooser.tokenizer,
-            fsm_grammar_states,
-            quantization_enabled=hq_env.is_quantization_enabled,
+            hq_env.is_quantization_enabled
         )
 
         input_ids = batches[dst_batch_idx].input_ids
@@ -461,20 +451,15 @@ class CausalLMBatch(Batch):
         # this means that we cannot shift inputs to the left after a long input sequence
         # was filtered out
         new_bs = round_up(len(requests), PREFILL_BATCH_BUCKET_SIZE)
-        missing_inputs = new_bs - len(requests)
-        dummy_inputs = ["?"] * missing_inputs
+        dummy_inputs = ["?"] * (new_bs - len(requests))
         parameters = [r.parameters for r in pb.requests]
-        # append the dummy parameters for dummy request
-        parameters.extend(
-            [generate_pb2.NextTokenChooserParameters()] * missing_inputs
-        )
+        if len(pb.requests) < new_bs:
+            for i in range(new_bs-len(pb.requests)) :
+                #append the dummy parameters for dummy request
+                parameters.append(parameters[0])
 
         next_token_chooser = HeterogeneousNextTokenChooser.from_pb(
-            pb=parameters,
-            dtype=dtype,
-            device=device,
-            tokenizer=tokenizer,
-            quantization_enabled=hq_env.is_quantization_enabled,
+            parameters, dtype, device, hq_env.is_quantization_enabled
         )
         tokenized_inputs = tokenizer(
             [r.data.inputs for r in requests] + dummy_inputs,
@@ -584,20 +569,14 @@ class CausalLM(Model):
         self,
         model_id: str,
         revision: Optional[str] = None,
-        use_medusa: Optional[str] = None,
         dtype: Optional[torch.dtype] = None,
-        trust_remote_code: bool = False,
     ):
-        if use_medusa:
-            raise RuntimeError("Medusa decoding is not enabled for AutoModel")
-
         # Create tokenizer
         tokenizer = AutoTokenizer.from_pretrained(
             model_id,
             revision=revision,
             padding_side="left",
             truncation_side="left",
-            trust_remote_code=trust_remote_code,
         )
         make_tokenizer_optional(tokenizer)
 
@@ -630,7 +609,6 @@ class CausalLM(Model):
                 model_id,
                 revision=revision,
                 torch_dtype=dtype,
-                trust_remote_code=trust_remote_code,
                 **model_kwargs
             )
             model = self.prepare_model_for_quantization(model)
@@ -665,8 +643,6 @@ class CausalLM(Model):
         if model.config.model_type == "llama":
             kwargs["attn_softmax_bf16"] = True
             kwargs["trim_logits"] = True
-
-        self.speculate = get_speculate()
 
         super(CausalLM, self).__init__(
             model=model,
@@ -815,8 +791,8 @@ class CausalLM(Model):
         attention_mask,
         position_ids,
         token_idx,
-        past_key_values: Optional[List[Tuple]] = None,
-        bypass_hpu_graph: Optional[bool] = None,
+        past_key_values: Optional = None,
+        bypass_hpu_graph: Optional = None,
     ) -> Tuple[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]:
         # Model Forward
         kwargs = {
@@ -840,10 +816,7 @@ class CausalLM(Model):
             return outputs.logits, outputs.past_key_values
 
     @tracer.start_as_current_span("generate_token")
-    def generate_token(
-        self, batches: List[CausalLMBatch]
-    ) -> Tuple[List[Generation], Optional[CausalLMBatch], Tuple[int, int]]:
-        start = time.time_ns()
+    def generate_token(self, batches: List[CausalLMBatch]) -> Tuple[List[Generation], Optional[CausalLMBatch]]:
         # Results
         generations: List[Generation] = []
         prev_batches = []
@@ -866,20 +839,17 @@ class CausalLM(Model):
                 # Select next token
                 input_length = batch.input_length
                 if logits.shape[-2] > 1:
-                    next_token_ids, next_token_logprobs, logprobs, _, _ = batch.next_token_chooser(
-                        batch.input_ids, logits[:, input_length - 1: input_length, :].squeeze(-2), self.speculate
+                    next_token_ids, next_token_logprobs, logprobs = batch.next_token_chooser(
+                        batch.input_ids, logits[:, input_length - 1: input_length, :].squeeze(-2)
                     )
                 else:
-                    next_token_ids, next_token_logprobs, logprobs, _, _ = batch.next_token_chooser(
-                        batch.input_ids, logits.squeeze(-2), self.speculate
+                    next_token_ids, next_token_logprobs, logprobs = batch.next_token_chooser(
+                        batch.input_ids, logits.squeeze(-2)
                     )
-                # Speculation is not active for causal
-                accepted_ids = torch.ones_like(batch.input_ids)[:, 0]
                 batch_top_token_ids, batch_top_token_logprobs = batch_top_tokens(
                     batch.top_n_tokens,
                     batch.top_n_tokens_tensor,
                     logprobs,
-                    accepted_ids,
                 )
 
                 prev_batches.append({
@@ -897,7 +867,6 @@ class CausalLM(Model):
                         'top_n_tokens': batch.top_n_tokens[req_idx],
                         'top_token_ids': batch_top_token_ids[req_idx],
                         'top_token_logprobs': batch_top_token_logprobs[req_idx],
-                        'grammar_state': batch.next_token_chooser.fsm_grammar_states[req.idx],
                     })
 
                 htorch.core.mark_step()
@@ -965,8 +934,6 @@ class CausalLM(Model):
 
         htorch.core.mark_step()
 
-        start_decode = time.time_ns()
-
         # Stage 3. Finish and return previous generations
         stopped = len(requests_to_generate) > 0
         for prev_batch in prev_batches:
@@ -995,7 +962,6 @@ class CausalLM(Model):
             top_n_tokens = req_data['top_n_tokens']
             top_token_ids = req_data['top_token_ids']
             top_token_logprobs = req_data['top_token_logprobs']
-            grammar_state = req_data['grammar_state']
 
             # Append next token to all tokens
             all_input_ids[input_length] = next_token_id
@@ -1048,60 +1014,38 @@ class CausalLM(Model):
                         clean_up_tokenization_spaces=False,
                         skip_special_tokens=False,
                     )
-                    prefill_tokens = Tokens(
-                        prefill_token_ids,
-                        prefill_logprobs,
-                        prefill_texts,
-                        is_special=[],
-                    )
+                    prefill_tokens = PrefillTokens(prefill_token_ids, prefill_logprobs, prefill_texts)
                 else:
                     prefill_tokens = None
 
                 if top_n_tokens > 0:
-                    all_top_tokens = []
-                    for top_token_ids, top_token_logprobs in zip(
-                        top_token_ids, top_token_logprobs
-                    ):
-                        toptoken_texts = self.tokenizer.batch_decode(
-                            top_token_ids,
-                            clean_up_tokenization_spaces=False,
-                            skip_special_tokens=False,
-                        )
-                        special_toptokens = [
-                            token_id in self.all_special_ids
-                            for token_id in top_token_ids
-                        ]
-                        top_tokens = Tokens(
-                            top_token_ids,
-                            top_token_logprobs,
-                            toptoken_texts,
-                            special_toptokens,
-                        )
-                        all_top_tokens.append(top_tokens)
-                    top_tokens = all_top_tokens
+                    toptoken_texts = self.tokenizer.batch_decode(
+                        top_token_ids,
+                        clean_up_tokenization_spaces=False,
+                        skip_special_tokens=False,
+                    )
+                    special_toptokens = [token_id in self.all_special_ids for token_id in top_token_ids]
+                    top_tokens = TopTokens(
+                        top_token_ids,
+                        top_token_logprobs,
+                        toptoken_texts,
+                        special_toptokens,
+                    )
                 else:
                     top_tokens = None
 
                 generation = Generation(
                     request.id,
                     prefill_tokens,
-                    Tokens(
-                        [next_token_id],
-                        [next_token_logprob],
-                        [next_token_text],
-                        [next_token_id in self.all_special_ids],
-                    ),
+                    next_token_id,
+                    next_token_logprob,
+                    next_token_text,
+                    next_token_id in self.all_special_ids,
                     generated_text,
                     top_tokens,
                 )
 
                 generations.append(generation)
-
-            batch.next_token_chooser = (
-                batch.next_token_chooser.advance_grammar_single_with_past_state(
-                    req.idx, next_token_id, grammar_state
-                )
-            )
 
             req.all_input_ids = all_input_ids
             req.input_length = new_input_length
@@ -1115,32 +1059,27 @@ class CausalLM(Model):
                 self.hb_profiler.stop()
             else:
                 self.hb_profiler.step()
-
-        forward_ns = start_decode - start
-        decode_ns = time.time_ns() - start_decode
-        return generations, batch if not stopped else None, (forward_ns, decode_ns)
+        return generations, batch if not stopped else None
 
     def warmup(self, batches: List[CausalLMBatch]) -> None:
         # prefill
-        _, prefill_batch, _ = self.generate_token([batches.pop(0)])
+        _, prefill_batch = self.generate_token([batches.pop(0)])
         # decode
-        _, decode_batch, _ = self.generate_token([prefill_batch])
+        _, decode_batch = self.generate_token([prefill_batch])
         # shifts
         self.shifting_warmup(decode_batch)
 
         # if decode bs is 1 warmup ends here
         if len(batches) == 0:
-            while decode_batch is not None:
-                _, decode_batch, _ = self.generate_token([decode_batch])
             return
 
         # prefill
-        _, prefill_batch, _ = self.generate_token([batches.pop(0)])
+        _, prefill_batch = self.generate_token([batches.pop(0)])
         # concatenate and decode
-        _, decode_batch, _ = self.generate_token([decode_batch, prefill_batch])
+        _, decode_batch = self.generate_token([decode_batch, prefill_batch])
         # decodes
         while decode_batch is not None:
-            _, decode_batch, _ = self.generate_token([decode_batch])
+            _, decode_batch = self.generate_token([decode_batch])
 
     def shifting_warmup(self, batch: CausalLMBatch) -> None:
         chunk_sizes = CHUNK_SIZES.copy()

@@ -5,8 +5,7 @@ from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple, Type, TypeVar
 from transformers import PreTrainedTokenizerBase
 
-from text_generation_server.models.types import Batch, Generation
-from text_generation_server.utils.speculate import get_speculate
+from text_generation_server.models.types import Batch, GeneratedText
 from text_generation_server.pb.generate_pb2 import InfoResponse
 
 B = TypeVar("B", bound=Batch)
@@ -23,7 +22,6 @@ class Model(ABC):
         rank: int = 0,
         world_size: int = 1,
         kwargs: dict = {},
-        speculate: Optional[int] = None,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -34,14 +32,7 @@ class Model(ABC):
         self.rank = rank
         self.world_size = world_size
         self.kwargs = kwargs
-        if speculate is None:
-            speculate = get_speculate()
-        self.speculate = speculate
-
-        self.has_position_ids = (
-            inspect.signature(model.forward).parameters.get("position_ids", None)
-            is not None
-        )
+        self.has_position_ids = inspect.signature(model.forward).parameters.get("position_ids", None) is not None
 
         self.check_initialized()
 
@@ -51,7 +42,6 @@ class Model(ABC):
             requires_padding=self.requires_padding,
             dtype=str(self.dtype),
             device_type=self.device.type,
-            speculate=self.speculate,
         )
 
     @property
@@ -60,9 +50,7 @@ class Model(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def generate_token(
-        self, batch: B
-    ) -> Tuple[List[Generation], Optional[B], Tuple[int, int]]:
+    def generate_token(self, batch: B) -> Tuple[List[GeneratedText], Optional[B]]:
         raise NotImplementedError
 
     def warmup(self, batch: B, max_total_tokens: int):

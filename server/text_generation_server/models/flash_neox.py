@@ -24,7 +24,6 @@ class FlashNeoXSharded(FlashCausalLM):
         model_id: str,
         revision: Optional[str] = None,
         quantize: Optional[str] = None,
-        use_medusa: Optional[str] = None,
         dtype: Optional[torch.dtype] = None,
         trust_remote_code: bool = False,
     ):
@@ -47,7 +46,6 @@ class FlashNeoXSharded(FlashCausalLM):
             model_id, revision=revision, trust_remote_code=trust_remote_code
         )
         config.quantize = quantize
-        config.use_medusa = use_medusa
 
         torch.distributed.barrier(group=self.process_group)
         filenames = weight_files(model_id, revision=revision, extension=".safetensors")
@@ -55,7 +53,7 @@ class FlashNeoXSharded(FlashCausalLM):
             filenames, device=device, dtype=dtype, process_group=self.process_group
         )
         if config.quantize == "gptq":
-            weights._set_gptq_params(model_id, revision)
+            weights._set_gptq_params(model_id)
 
         model = FlashGPTNeoXForCausalLM(config, weights)
 

@@ -13,21 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-> [!NOTE]
-> This is a temporal fix to get Mixtra 8x22B with full context before next release
-> Do the following:
-> 1. Change Dockerfile line 40 from
->        HF_TOKEN=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 # This is invalid token so change to your own token.
-> 2. [Follow this guide](https://medium.com/@runaker/mixtral-8x22b-on-gaudi-2-a-comprehensive-setup-guide-a9f067c4a707)
->    TL;DR:
->    ```bash
->    docker build -t tgi_gaudi .
->    model=mistralai/Mixtral-8x22B-Instruct-v0.1
->    volume=$PWD/data
->
->    docker run -p 8091:80 -v $volume:/data -e LIMIT_HPU_GRAPH=true --runtime=habana -e PT_HPU_ENABLE_LAZY_COLLECTIVES=true -e HABANA_VISIBLE_DEVICES=all -e OMPI_MCA_btl_vader_single_copy_mechanism=none --cap-add=sys_nice --ipc=host  tgi_gaudi --model-id $model --dtype bfloat16  --max-total-tokens 65536 --max-input-length 32768 --max-batch-prefill-tokens 32768 --sharded true --num-shard 8
->    ```
-
 
 # Text Generation Inference on Habana Gaudi
 

@@ -36,7 +36,7 @@ from text_generation_server.utils.layers import (
     TensorParallelColumnLinear,
     TensorParallelEmbedding,
     TensorParallelRowLinear,
-    SpeculativeHead,
+    TensorParallelHead,
 )
 
 CUSTOM_KERNELS_ENABLED = False
@@ -820,7 +820,7 @@ class BloomForCausalLM(BloomPreTrainedModel):
         super().__init__(config)
         self.transformer = BloomModel(config, weights)
 
-        self.lm_head = SpeculativeHead.load(
+        self.lm_head = TensorParallelHead.load(
             config,
             prefix="word_embeddings",
             weights=weights,
@@ -870,7 +870,7 @@ class BloomForCausalLM(BloomPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         **deprecated_arguments,
-    ) -> Union[Tuple, CausalLMOutputWithCrossAttentions]:
+    ) -> Union[Tuple[torch.Tensor], CausalLMOutputWithCrossAttentions]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for language modeling. Note that the labels **are shifted** inside the model, i.e. you can set
@@ -904,20 +904,17 @@ class BloomForCausalLM(BloomPreTrainedModel):
         )
         hidden_states = transformer_outputs[0]
 
-        logits, speculative_logits = self.lm_head(hidden_states)
+        lm_logits = self.lm_head(hidden_states)
         loss = None
 
         if not return_dict:
             output = (lm_logits,) + transformer_outputs[1:]
             return ((loss,) + output) if loss is not None else output
 
-        return (
-            CausalLMOutputWithCrossAttentions(
-                loss=loss,
-                logits=logits,
-                past_key_values=transformer_outputs.past_key_values,
-                hidden_states=transformer_outputs.hidden_states,
-                attentions=transformer_outputs.attentions,
-            ),
-            speculative_logits,
+        return CausalLMOutputWithCrossAttentions(
+            loss=loss,
+            logits=lm_logits,
+            past_key_values=transformer_outputs.past_key_values,
+            hidden_states=transformer_outputs.hidden_states,
+            attentions=transformer_outputs.attentions,
         )

@@ -92,9 +92,7 @@ class GalacticaCausalLMBatch(CausalLMBatch):
             requests_idx_mapping[r.id] = i
             # Add escape_custom_split_sequence to the CausalLMBatch logic
             inputs.append(escape_custom_split_sequence(r.inputs))
-            next_token_choosers.append(
-                NextTokenChooser.from_pb(r.parameters, device, tokenizer)
-            )
+            next_token_choosers.append(NextTokenChooser.from_pb(r.parameters, device))
             stopping_criteria = StoppingCriteria.from_pb(
                 r.stopping_parameters, tokenizer
             )
@@ -167,7 +165,6 @@ class GalacticaSharded(CausalLM):
         model_id: str,
         revision: Optional[str] = None,
         quantize: Optional[str] = None,
-        use_medusa: Optional[str] = None,
         dtype: Optional[torch.dtype] = None,
         trust_remote_code: bool = False,
     ):
@@ -195,7 +192,6 @@ class GalacticaSharded(CausalLM):
         )
         config.quantize = quantize
         tokenizer.pad_token_id = config.pad_token_id
-        config.use_medusa = use_medusa
 
         torch.distributed.barrier(group=self.process_group)
         filenames = weight_files(model_id, revision=revision, extension=".safetensors")
@@ -203,7 +199,7 @@ class GalacticaSharded(CausalLM):
             filenames, device=device, dtype=dtype, process_group=self.process_group
         )
         if config.quantize == "gptq":
-            weights._set_gptq_params(model_id, revision)
+            weights._set_gptq_params(model_id)
 
         model = OPTForCausalLM(config, weights)
 
@@ -231,10 +227,10 @@ class GalacticaSharded(CausalLM):
     def forward(
         self, input_ids, attention_mask, position_ids, past_key_values: Optional = None
     ):
-        outputs, speculative_logits = self.model.forward(
+        outputs = self.model.forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
             past_key_values=past_key_values,
             use_cache=True,
         )
-        return outputs.logits, speculative_logits, outputs.past_key_values
+        return outputs.logits, outputs.past_key_values

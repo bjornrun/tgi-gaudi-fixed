@@ -32,7 +32,7 @@ from text_generation_server.utils.layers import (
     TensorParallelColumnLinear,
     TensorParallelEmbedding,
     TensorParallelRowLinear,
-    SpeculativeHead,
+    TensorParallelHead,
 )
 
 EPS = 1e-5
@@ -748,7 +748,7 @@ class OPTForCausalLM(OPTPreTrainedModel):
 
         self.model = OPTModel(config, weights)
 
-        self.lm_head = SpeculativeHead.load(
+        self.lm_head = TensorParallelHead.load(
             config, prefix="model.decoder.embed_tokens", weights=weights
         )
 
@@ -792,19 +792,16 @@ class OPTForCausalLM(OPTPreTrainedModel):
             return_dict=return_dict,
         )
 
-        logits, speculative_logits = self.lm_head(outputs)
+        logits = self.lm_head(outputs[0]).contiguous()
 
         loss = None
 
-        return (
-            CausalLMOutputWithPast(
-                loss=loss,
-                logits=logits,
-                past_key_values=outputs.past_key_values,
-                hidden_states=outputs.hidden_states,
-                attentions=outputs.attentions,
-            ),
-            speculative_logits,
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
         )
 
     def prepare_inputs_for_generation(

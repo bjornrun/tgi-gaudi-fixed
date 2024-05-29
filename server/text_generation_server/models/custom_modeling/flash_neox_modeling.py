@@ -33,7 +33,7 @@ from text_generation_server.utils.layers import (
     TensorParallelRowLinear,
     TensorParallelColumnLinear,
     TensorParallelEmbedding,
-    SpeculativeHead,
+    TensorParallelHead,
     FastLayerNorm,
     PositionRotaryEmbedding,
     get_linear,
@@ -91,8 +91,6 @@ class FlashNeoxAttention(torch.nn.Module):
         self.hidden_size = hidden_size
         self.head_size = hidden_size // num_heads
 
-        self.rotary_dim = int(config.rotary_pct * self.head_size)
-
         if self.num_heads % weights.process_group.size() != 0:
             raise ValueError(
                 f"`num_heads` must be divisible by `num_shards` (got `num_heads`: {self.num_heads} "
@@ -100,11 +98,8 @@ class FlashNeoxAttention(torch.nn.Module):
             )
         self.num_heads = self.num_heads // weights.process_group.size()
 
-        self.rotary_emb = PositionRotaryEmbedding.static(
-            config=config,
-            dim=self.rotary_dim,
-            base=config.rotary_emb_base,
-            device=weights.device,
+        self.rotary_emb = PositionRotaryEmbedding.load(
+            config=config, prefix=f"{prefix}.rotary_emb", weights=weights
         )
 
         self.softmax_scale = self.head_size ** (-0.5)
@@ -187,9 +182,9 @@ class FlashMLP(nn.Module):
             if "gelu" not in act
             else lambda x: torch.nn.functional.gelu(
                 x,
-                approximate=(
-                    "tanh" if act in ["gelu_fast", "gelu_pytorch_tanh"] else "none"
-                ),
+                approximate="tanh"
+                if act in ["gelu_fast", "gelu_pytorch_tanh"]
+                else "none",
             )
         )
 
@@ -369,7 +364,7 @@ class FlashGPTNeoXForCausalLM(FlashGPTNeoXPreTrainedModel):
         super().__init__(config)
         self.gpt_neox = FlashGPTNeoXModel(config, weights)
 
-        self.embed_out = SpeculativeHead.load(
+        self.embed_out = TensorParallelHead.load(
             config, prefix="embed_out", weights=weights
         )
 

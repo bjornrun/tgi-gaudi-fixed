@@ -25,7 +25,6 @@ class FlashRWSharded(FlashCausalLM):
         model_id: str,
         revision: Optional[str] = None,
         quantize: Optional[str] = None,
-        use_medusa: Optional[str] = None,
         dtype: Optional[torch.dtype] = None,
         trust_remote_code: bool = False,
     ):
@@ -62,9 +61,8 @@ class FlashRWSharded(FlashCausalLM):
         )
 
         config.quantize = quantize
-        config.use_medusa = use_medusa
         if config.quantize == "gptq":
-            weights._set_gptq_params(model_id, revision)
+            weights._set_gptq_params(model_id)
 
         model = FlashRWForCausalLM(config, weights)
 

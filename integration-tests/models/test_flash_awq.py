@@ -18,6 +18,7 @@ async def flash_llama_awq(flash_llama_awq_handle):
 
 
 @pytest.mark.asyncio
+@pytest.mark.private
 async def test_flash_llama_awq(flash_llama_awq, response_snapshot):
     response = await flash_llama_awq.generate(
         "What is Deep Learning?", max_new_tokens=10, decoder_input_details=True
@@ -32,6 +33,7 @@ async def test_flash_llama_awq(flash_llama_awq, response_snapshot):
 
 
 @pytest.mark.asyncio
+@pytest.mark.private
 async def test_flash_llama_awq_all_params(flash_llama_awq, response_snapshot):
     response = await flash_llama_awq.generate(
         "What is Deep Learning?",
@@ -53,6 +55,7 @@ async def test_flash_llama_awq_all_params(flash_llama_awq, response_snapshot):
 
 
 @pytest.mark.asyncio
+@pytest.mark.private
 async def test_flash_llama_awq_load(flash_llama_awq, generate_load, response_snapshot):
     responses = await generate_load(
         flash_llama_awq, "What is Deep Learning?", max_new_tokens=10, n=4

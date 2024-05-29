@@ -25,7 +25,6 @@ class T5Sharded(Seq2SeqLM):
         model_id: str,
         revision: Optional[str] = None,
         quantize: Optional[str] = None,
-        use_medusa: Optional[str] = None,
         dtype: Optional[torch.dtype] = None,
         trust_remote_code: bool = False,
     ):
@@ -43,7 +42,6 @@ class T5Sharded(Seq2SeqLM):
             trust_remote_code=trust_remote_code,
         )
         config.quantize = quantize
-        config.use_medusa = use_medusa
 
         tokenizer = AutoTokenizer.from_pretrained(
             model_id,
@@ -96,7 +94,7 @@ class T5Sharded(Seq2SeqLM):
         List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]],
     ]:
         # Model Forward
-        outputs, speculative_logits = self.model.forward(
+        outputs = self.model.forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
             decoder_input_ids=decoder_input_ids,
@@ -108,7 +106,6 @@ class T5Sharded(Seq2SeqLM):
 
         return (
             outputs.logits,
-            speculative_logits,
             outputs.encoder_last_hidden_state,
             outputs.past_key_values,
         )

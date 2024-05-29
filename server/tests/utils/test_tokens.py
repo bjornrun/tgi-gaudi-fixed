@@ -1,9 +1,6 @@
 # Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
 
-import pytest
 import torch
-from transformers import AutoTokenizer
-
 from text_generation_server.utils.tokens import (
     StopSequenceCriteria,
     StoppingCriteria,
@@ -11,15 +8,7 @@ from text_generation_server.utils.tokens import (
     batch_top_tokens,
     make_tokenizer_optional,
 )
-
-
-@pytest.fixture
-def skip_tokenizer_env_var():
-    import os
-    os.environ["SKIP_TOKENIZER_IN_TGI"] = "true"
-    yield
-    del os.environ['SKIP_TOKENIZER_IN_TGI']
-
+from transformers import AutoTokenizer
 
 def test_stop_sequence_criteria():
     criteria = StopSequenceCriteria("/test;")
@@ -64,50 +53,31 @@ def test_batch_top_tokens():
     top_n_tokens = [0, 2, 3, 4, 5]
     top_n_tokens_tensor = torch.tensor(top_n_tokens)
     inp_logprobs = torch.tensor([[-1.0, -3.0, -4.0, -2.0, -3.0]] * 5)
-    accepted_ids = torch.ones_like(top_n_tokens_tensor)
 
     topn_tok_ids, topn_tok_logprobs = batch_top_tokens(
-        top_n_tokens, top_n_tokens_tensor, inp_logprobs, accepted_ids
+        top_n_tokens, top_n_tokens_tensor, inp_logprobs
     )
 
-    assert topn_tok_ids[0] == [[]]
-    assert topn_tok_ids[1] == [[0, 3]]
-    assert topn_tok_ids[2] == [[0, 3, 1, 4]]
-    assert topn_tok_ids[3] == [[0, 3, 1, 4]]
-    assert topn_tok_ids[4] == [[0, 3, 1, 4, 2]]
+    assert topn_tok_ids[0] == []
+    assert topn_tok_ids[1] == [0, 3]
+    assert topn_tok_ids[2] == [0, 3, 1, 4]
+    assert topn_tok_ids[3] == [0, 3, 1, 4]
+    assert topn_tok_ids[4] == [0, 3, 1, 4, 2]
 
-    assert topn_tok_logprobs[0] == [[]]
-    assert topn_tok_logprobs[1] == [[-1, -2]]
-    assert topn_tok_logprobs[2] == [[-1, -2, -3, -3]]
-    assert topn_tok_logprobs[3] == [[-1, -2, -3, -3]]
-    assert topn_tok_logprobs[4] == [[-1, -2, -3, -3, -4]]
-
-    # Now let's make second member of the batch be speculated
-    inp_logprobs = torch.tensor([[-1.0, -3.0, -4.0, -2.0, -3.0]] * 5 * 2)
-    accepted_ids[1] = 2
-    topn_tok_ids, topn_tok_logprobs = batch_top_tokens(
-        top_n_tokens, top_n_tokens_tensor, inp_logprobs, accepted_ids
-    )
-
-    assert topn_tok_ids[0] == [[]]
-    assert topn_tok_ids[1] == [[0, 3], [0, 3]]
-    assert topn_tok_ids[2] == [[0, 3, 1, 4]]
-    assert topn_tok_ids[3] == [[0, 3, 1, 4]]
-    assert topn_tok_ids[4] == [[0, 3, 1, 4, 2]]
-
-    assert topn_tok_logprobs[0] == [[]]
-    assert topn_tok_logprobs[1] == [[-1, -2], [-1, -2]]
-    assert topn_tok_logprobs[2] == [[-1, -2, -3, -3]]
-    assert topn_tok_logprobs[3] == [[-1, -2, -3, -3]]
-    assert topn_tok_logprobs[4] == [[-1, -2, -3, -3, -4]]
+    assert topn_tok_logprobs[0] == []
+    assert topn_tok_logprobs[1] == [-1, -2]
+    assert topn_tok_logprobs[2] == [-1, -2, -3, -3]
+    assert topn_tok_logprobs[3] == [-1, -2, -3, -3]
+    assert topn_tok_logprobs[4] == [-1, -2, -3, -3, -4]
 
 
-def test_pass_through_tokenizer(skip_tokenizer_env_var):
+
+def test_pass_through_tokenizer():
     tokenizer = AutoTokenizer.from_pretrained(
-        'meta-llama/Llama-2-7b-chat-hf',
-        revision=None,
-        padding_side="left",
-        truncation_side="left",
+            'meta-llama/Llama-2-7b-chat-hf',
+            revision=None,
+            padding_side="left",
+            truncation_side="left",
     )
     tokenizer.pad_token_id = 2
     make_tokenizer_optional(tokenizer)

@@ -14,6 +14,7 @@ async def flash_starcoder_gptq(flash_starcoder_gptq_handle):
 
 
 @pytest.mark.asyncio
+@pytest.mark.private
 async def test_flash_starcoder_gptq(flash_starcoder_gptq, generous_response_snapshot):
     response = await flash_starcoder_gptq.generate(
         "def geometric_mean(L: List[float]):",
@@ -25,6 +26,7 @@ async def test_flash_starcoder_gptq(flash_starcoder_gptq, generous_response_snap
 
 
 @pytest.mark.asyncio
+@pytest.mark.private
 async def test_flash_starcoder_gptq_default_params(
     flash_starcoder_gptq, generous_response_snapshot
 ):
@@ -41,6 +43,7 @@ async def test_flash_starcoder_gptq_default_params(
 
 
 @pytest.mark.asyncio
+@pytest.mark.private
 async def test_flash_starcoder_gptq_load(
     flash_starcoder_gptq, generate_load, generous_response_snapshot
 ):

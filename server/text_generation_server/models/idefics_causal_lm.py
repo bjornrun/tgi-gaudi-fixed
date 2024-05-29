@@ -1,12 +1,17 @@
 import torch
-import torch
-import time
+import inspect
+import re
+from io import BytesIO
+import base64
+from PIL import Image
+import re
 
 from dataclasses import dataclass
 from opentelemetry import trace
 from transformers import (
     AutoProcessor,
     AutoTokenizer,
+    AutoModelForCausalLM,
     PreTrainedTokenizerBase,
     ProcessorMixin,
 )
@@ -15,17 +20,33 @@ from typing import Optional, Tuple, List, Type, Dict
 from text_generation_server.models import Model
 from text_generation_server.models.types import (
     Batch,
-    Tokens,
+    PrefillTokens,
     Generation,
     GeneratedText,
 )
 from text_generation_server.pb import generate_pb2
 from text_generation_server.utils import NextTokenChooser, StoppingCriteria, Sampling
-from text_generation_server.models.vlm_causal_lm import split
 
 import re
 
 IMAGES = re.compile(r"!\[[^\]]*\]\((.*?)\s*(\"(?:.*[^\"])\")?\s*\)")
+
+
+def split(string):
+    parts = []
+    cursor = 0
+    for pattern in IMAGES.finditer(string):
+        start = pattern.start()
+        if start != cursor:
+            parts.append(string[cursor:start])
+
+        parts.append(pattern.group(1))
+        cursor = pattern.end()
+
+    if cursor != len(string):
+        parts.append(string[cursor:])
+
+    return parts
 
 
 tracer = trace.get_tracer(__name__)
@@ -81,18 +102,7 @@ class IdeficsCausalLMBatch(Batch):
         cls,
         pb: generate_pb2.Batch,
         tokenizer: PreTrainedTokenizerBase,
-        dtype: torch.dtype,
-        device: torch.device,
-    ) -> "IdeficsCausalLMBatch":
-        raise NotImplementedError
-
-    @classmethod
-    def from_pb_processor(
-        cls,
-        pb: generate_pb2.Batch,
-        tokenizer: PreTrainedTokenizerBase,
         processor: ProcessorMixin,  # Hack
-        config,
         dtype: torch.dtype,
         device: torch.device,
     ) -> "IdeficsCausalLMBatch":
@@ -110,9 +120,7 @@ class IdeficsCausalLMBatch(Batch):
         for i, r in enumerate(pb.requests):
             requests_idx_mapping[r.id] = i
             inputs.append(r.inputs)
-            next_token_choosers.append(
-                NextTokenChooser.from_pb(r.parameters, device, tokenizer)
-            )
+            next_token_choosers.append(NextTokenChooser.from_pb(r.parameters, device))
             stopping_criteria = StoppingCriteria.from_pb(
                 r.stopping_parameters, tokenizer
             )
@@ -123,14 +131,10 @@ class IdeficsCausalLMBatch(Batch):
                 padding_right_offset, stopping_criteria.max_new_tokens
             )
 
-        # TODO Check impact on idefics
         prompts = []
         for inp in inputs:
             # Each input is encoded into a list, where each element of this input list is either a string or a URL
-            prompt = []
-            for chunk in split(inp):
-                prompt.append(chunk["content"])
-            prompts.append(prompt)
+            prompts.append(split(inp))
 
         # The processor replaces the call to tokenizer, and
         # a/ takes care of fetching images from the URL
@@ -141,8 +145,7 @@ class IdeficsCausalLMBatch(Batch):
             padding=True,
             truncation=True,
             max_length=max_truncation,
-            # TODO Check impact on idefics
-            # add_end_of_utterance_token=False,  # Already taken care of inside the prompts, so bypassing the processor's handling of this token
+            add_end_of_utterance_token=False,  # Already taken care of inside the prompts, so bypassing the processor's handling of this token
         ).to(device)
         for _ in pb.requests:
             input_len = tokenized_inputs["input_ids"].shape[1]
@@ -157,7 +160,7 @@ class IdeficsCausalLMBatch(Batch):
         max_input_length = input_lengths.max()
 
         input_ids = tokenized_inputs["input_ids"]
-        pixel_values = tokenized_inputs.get("pixel_values", None)
+        pixel_values = tokenized_inputs["pixel_values"]
         image_hidden_states = None
         # Allocate maximum attention_mask
         attention_mask = input_ids.new_zeros(
@@ -166,19 +169,16 @@ class IdeficsCausalLMBatch(Batch):
         # Copy tokenizer attention_mask into fully allocated attention_mask
         attention_mask[:, :max_input_length] = tokenized_inputs["attention_mask"]
         # Do the same for image_attention_mask
-        if pixel_values is None:
-            image_attention_mask = None
-        else:
-            image_attention_mask = input_ids.new_zeros(
-                (
-                    pb.size,
-                    max_input_length + padding_right_offset,
-                    pixel_values.size(1),
-                )
+        image_attention_mask = input_ids.new_zeros(
+            (
+                pb.size,
+                max_input_length + padding_right_offset,
+                tokenized_inputs["pixel_values"].size(1),
             )
-            image_attention_mask[:, :max_input_length, :] = tokenized_inputs[
-                "image_attention_mask"
-            ]
+        )
+        image_attention_mask[:, :max_input_length, :] = tokenized_inputs[
+            "image_attention_mask"
+        ]
 
         position_ids = tokenized_inputs["attention_mask"].long().cumsum(-1) - 1
         position_ids.masked_fill_(tokenized_inputs["attention_mask"] == 0, 1)
@@ -407,9 +407,9 @@ class IdeficsCausalLMBatch(Batch):
                 pixel_values = batch.pixel_values.new_zeros(
                     (total_batch_size, max_num_images, 3, 224, 224)
                 )
-            pixel_values[start_index:end_index, :curr_batch_max_num_images] = (
-                batch.pixel_values
-            )
+            pixel_values[
+                start_index:end_index, :curr_batch_max_num_images
+            ] = batch.pixel_values
 
             if image_attention_mask is None:
                 image_attention_mask = batch.image_attention_mask.new_zeros(
@@ -506,14 +506,14 @@ class IdeficsCausalLMBatch(Batch):
                 # We slice the keys to remove the padding from previous batches
                 past_seq_len = batch.max_input_length - 1
                 if batch.keys_head_dim_last:
-                    padded_past_keys[start_index:end_index, :, -past_seq_len:, :] = (
-                        past_keys[:, :, -past_seq_len:, :]
-                    )
+                    padded_past_keys[
+                        start_index:end_index, :, -past_seq_len:, :
+                    ] = past_keys[:, :, -past_seq_len:, :]
                 else:
                     # BLOOM case
-                    padded_past_keys[start_index:end_index, :, :, -past_seq_len:] = (
-                        past_keys[:, :, :, -past_seq_len:]
-                    )
+                    padded_past_keys[
+                        start_index:end_index, :, :, -past_seq_len:
+                    ] = past_keys[:, :, :, -past_seq_len:]
                 del past_keys
 
                 start_index = end_index
@@ -531,9 +531,9 @@ class IdeficsCausalLMBatch(Batch):
                 end_index = start_index + len(batch)
                 # We slice the past values to remove the padding from previous batches
                 past_seq_len = batch.max_input_length - 1
-                padded_past_values[start_index:end_index, :, -past_seq_len:, :] = (
-                    past_values[:, :, -past_seq_len:, :]
-                )
+                padded_past_values[
+                    start_index:end_index, :, -past_seq_len:, :
+                ] = past_values[:, :, -past_seq_len:, :]
                 del past_values
 
                 # Update values
@@ -609,11 +609,9 @@ class IdeficsCausalLM(Model):
             model_id,
             revision=revision,
             torch_dtype=dtype,
-            device_map=(
-                "auto"
-                if torch.cuda.is_available() and torch.cuda.device_count() > 1
-                else None
-            ),
+            device_map="auto"
+            if torch.cuda.is_available() and torch.cuda.device_count() > 1
+            else None,
             load_in_8bit=quantize == "bitsandbytes",
             trust_remote_code=trust_remote_code,
         )
@@ -666,39 +664,30 @@ class IdeficsCausalLM(Model):
         if self.has_position_ids:
             kwargs["position_ids"] = position_ids
 
-        outputs, speculative_logits = self.model.forward(**kwargs)
-        return (
-            outputs.logits,
-            speculative_logits,
-            outputs.past_key_values,
-            outputs.image_hidden_states,
-        )
+        outputs = self.model.forward(**kwargs)
+        return outputs.logits, outputs.past_key_values, outputs.image_hidden_states
 
     @tracer.start_as_current_span("generate_token")
     def generate_token(
         self, batch: IdeficsCausalLMBatch
-    ) -> Tuple[List[Generation], Optional[IdeficsCausalLMBatch], Tuple[int, int]]:
-        start = time.time_ns()
+    ) -> Tuple[List[Generation], Optional[IdeficsCausalLMBatch]]:
         # slice the attention mask to the correct shape
         attention_mask = batch.attention_mask[:, : -batch.padding_right_offset]
-        if batch.image_attention_mask is None:
-            image_attention_mask = None
+        if batch.input_ids.size(1) == 1:
+            # THIS is a hack: when calling idefics.generate, the first time, we need the whole image_attention_mask (size bs x max_seq_len x max_num_images),
+            # but the subsequent times, we only need the last attention mask along the `max_seq_len` dimension
+            # this is due to the nature IDEFICS: it's an encoder decoder, and so when decoding, only the currently generated
+            # token need to attend to the encoder hidden states (i.e. the vision encoder)
+            # Also see seq2seq_lm.Seq2SeqLM.generate_token which has roughly the same logic
+            image_attention_mask = batch.image_attention_mask[
+                :, -(batch.padding_right_offset + 1)
+            ].unsqueeze(1)
         else:
-            if batch.input_ids.size(1) == 1:
-                # THIS is a hack: when calling idefics.generate, the first time, we need the whole image_attention_mask (size bs x max_seq_len x max_num_images),
-                # but the subsequent times, we only need the last attention mask along the `max_seq_len` dimension
-                # this is due to the nature IDEFICS: it's an encoder decoder, and so when decoding, only the currently generated
-                # token need to attend to the encoder hidden states (i.e. the vision encoder)
-                # Also see seq2seq_lm.Seq2SeqLM.generate_token which has roughly the same logic
-                image_attention_mask = batch.image_attention_mask[
-                    :, -(batch.padding_right_offset + 1)
-                ].unsqueeze(1)
-            else:
-                image_attention_mask = batch.image_attention_mask[
-                    :, : -batch.padding_right_offset
-                ]
+            image_attention_mask = batch.image_attention_mask[
+                :, : -batch.padding_right_offset
+            ]
 
-        logits, speculative_logits, past, image_hidden_states = self.forward(
+        logits, past, image_hidden_states = self.forward(
             input_ids=batch.input_ids,
             attention_mask=attention_mask,
             position_ids=batch.position_ids,
@@ -709,8 +698,6 @@ class IdeficsCausalLM(Model):
         )
         # Hardcoded remove image tokens
         logits[:, 32000:32001] = torch.finfo(logits.dtype).min
-
-        start_decode = time.time_ns()
 
         # Results
         generations: List[Generation] = []
@@ -804,11 +791,8 @@ class IdeficsCausalLM(Model):
                         clean_up_tokenization_spaces=False,
                         skip_special_tokens=False,
                     )
-                    prefill_tokens = Tokens(
-                        prefill_token_ids,
-                        prefill_logprobs,
-                        prefill_texts,
-                        is_special=[],
+                    prefill_tokens = PrefillTokens(
+                        prefill_token_ids, prefill_logprobs, prefill_texts
                     )
                 else:
                     prefill_tokens = None
@@ -818,12 +802,10 @@ class IdeficsCausalLM(Model):
                 generation = Generation(
                     request.id,
                     prefill_tokens,
-                    Tokens(
-                        [next_token_id_squeezed],
-                        [next_token_logprob],
-                        [next_token_text],
-                        [next_token_id_squeezed.item() in self.all_special_ids],
-                    ),
+                    next_token_id_squeezed,
+                    next_token_logprob,
+                    next_token_text,
+                    next_token_id_squeezed.item() in self.all_special_ids,
                     generated_text,
                     top_tokens,
                 )
@@ -831,9 +813,6 @@ class IdeficsCausalLM(Model):
                 generations.append(generation)
 
             # Update values
-            batch.next_token_choosers[i] = batch.next_token_choosers[i].advance_grammar(
-                next_token_id_squeezed.item()
-            )
             batch.input_ids[i, 0] = next_token_id
             batch.all_input_ids[i] = all_input_ids
             batch.input_lengths[i] = new_input_length
@@ -843,18 +822,16 @@ class IdeficsCausalLM(Model):
 
         # We finished all generations in the batch; there is no next batch
         if stopped:
-            forward_ns = start_decode - start
-            decode_ns = time.time_ns() - start_decode
-            return generations, None, (forward_ns, decode_ns)
+            return generations, None
 
         # Slice unused values from prefill
         batch.input_ids = batch.input_ids[:, :1]
 
         # Update attention_mask as we added a new token to input_ids
         batch.attention_mask[:, -batch.padding_right_offset] = 1
-        batch.image_attention_mask[:, -batch.padding_right_offset, :] = (
-            batch.image_attention_mask[:, -(batch.padding_right_offset + 1), :]
-        )
+        batch.image_attention_mask[
+            :, -batch.padding_right_offset, :
+        ] = batch.image_attention_mask[:, -(batch.padding_right_offset + 1), :]
         # Decrease right offset
         batch.padding_right_offset -= 1
 
@@ -865,6 +842,4 @@ class IdeficsCausalLM(Model):
         batch.past_key_values = past
         batch.image_hidden_states = image_hidden_states
 
-        forward_ns = start_decode - start
-        decode_ns = time.time_ns() - start_decode
-        return generations, batch, (forward_ns, decode_ns)
+        return generations, batch
