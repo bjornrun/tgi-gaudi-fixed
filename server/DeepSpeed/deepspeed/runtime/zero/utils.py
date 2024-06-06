@@ -69,14 +69,9 @@ def get_lst_from_rank0(lst: List[int]) -> None:
     NOTE: creates both communication and synchronization overhead so should be used
     sparingly
     """
-    #if torch.distributed.get_backend() == "hccl":
-    #    device=torch.device('hpu:0')
-    #else:
-    #    device=torch.device('cuda:{}'.format(os.environ["LOCAL_RANK"]))
     lst_tensor = torch.tensor(
         lst if dist.get_rank() == 0 else [-1] * len(lst),
         dtype=int,
-        # device=device,
         device=torch.device(get_accelerator().device_name(os.environ["LOCAL_RANK"])),
         requires_grad=False,
     )

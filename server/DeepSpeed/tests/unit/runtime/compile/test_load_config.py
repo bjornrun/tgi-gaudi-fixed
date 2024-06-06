@@ -9,8 +9,12 @@ import torch
 from unit.simple_model import SimpleModel
 import deepspeed
 from deepspeed.accelerator import get_accelerator
+from deepspeed.runtime.utils import required_torch_version
 
 from unit.common import DistributedTest
+
+pytestmark = pytest.mark.skipif(not required_torch_version(min_version=2.1),
+                                reason="Compile tests requires Pytorch version 2.1 or above")
 
 custom_backend_called = False
 custom_compler_fn_called = False
@@ -25,7 +29,7 @@ if deepspeed.is_compile_supported():
     def custom_compiler_fn(module: torch.nn.Module):
         global custom_compler_fn_called
         custom_compler_fn_called = True
-        return torch.compile(module)
+        return torch.compile(module, backend=get_accelerator().get_compile_backend())
 
 
 @pytest.fixture
@@ -43,7 +47,7 @@ def base_config():
         },
         "compile": {
             "enabled": True,
-            "backend": "inductor"
+            "backend": get_accelerator().get_compile_backend()
         }
     }
     return config_dict

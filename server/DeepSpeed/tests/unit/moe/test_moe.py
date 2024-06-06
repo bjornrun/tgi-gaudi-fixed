@@ -7,11 +7,11 @@ import torch
 import deepspeed
 import pytest
 import gc
-import os
 from unit.common import DistributedTest
 from unit.simple_model import SimplePRMoEModel, SimpleMoEModel, sequence_dataloader
 from deepspeed.moe.utils import split_params_into_different_moe_groups_for_optimizer, is_moe_param
 from deepspeed.runtime.utils import required_torch_version
+from deepspeed.accelerator import get_accelerator
 
 
 @pytest.mark.parametrize("ep_size", [2, 4])
@@ -36,14 +36,12 @@ class TestMoE(DistributedTest):
         }
         hidden_dim = 16
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
 
         # E+D -- ep_size = 2
         # E only -- ep_size = 4
         model = SimpleMoEModel(hidden_dim, ep_size=ep_size, use_residual=use_residual)
+        #TODO SW-179530: remove workaround when issue with lazy mode is resolved (see SW-179530).
+        model.to(get_accelerator().device_name())
         param_group = {'params': [p for p in model.parameters()], 'name': 'random-unique-name'}
         params = split_params_into_different_moe_groups_for_optimizer(param_group)
         optimizer = torch.optim.AdamW(params=params)
@@ -127,10 +125,6 @@ class TestPRMoE(DistributedTest):
         config_dict = {"train_batch_size": 8, "steps_per_print": 1, "fp16": {"enabled": True}}
         hidden_dim = 16
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
 
         # E+D -- ep_size = 2
         # E only -- ep_size = 4

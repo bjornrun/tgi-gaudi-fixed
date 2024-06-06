@@ -126,9 +126,25 @@ BFLOAT16_OLD = "bfloat16"  # keeping for backwards compatibility
 BFLOAT16_ENABLED = "enabled"
 BFLOAT16_ENABLED_DEFAULT = False
 
-# bf16 optimizer gradient accumulation via hooks
-BFLOAT16_GRAD_ACC_VIA_HOOKS = "accumulate_grads_via_hooks"
-BFLOAT16_GRAD_ACC_VIA_HOOKS_DEFAULT = False
+# BFLOAT16 optimizer immediate gradient update
+BFLOAT16_IMMEDIATE_GRAD_UPDATE = "immediate_grad_update"
+BFLOAT16_IMMEDIATE_GRAD_UPDATE_DEFAULT = False
+
+#########################################
+# FP8 optimizer support
+#########################################
+# By default, this feature is not enabled.
+# Users can configure in ds_config.json as below example:
+FP8_FORMAT = '''
+FP8 parameters should be of the format:
+"fp8_optimizer": {
+  "enabled": true
+}
+'''
+FP8_OPTIMIZER = "fp8_optimizer"
+
+FP8_OPTIMIZER_ENABLED = "enabled"
+FP8_OPTIMIZER_ENABLED_DEFAULT = False
 
 #########################################
 # FP16 support
@@ -213,6 +229,18 @@ Gradient clipping should be enabled as:
 '''
 GRADIENT_CLIPPING = 'gradient_clipping'
 GRADIENT_CLIPPING_DEFAULT = 0.
+
+#########################################
+# Capture graph for short kernels sequences
+#########################################
+# Graph harvesting. By default, this feature is not enabled.
+# Users can configure in ds_config.json as below example:
+GRAPH_HARVESTING_FORMAT = '''
+Graph harvesting should be enabled as:
+"graph_harvesting": true
+'''
+GRAPH_HARVESTING = 'graph_harvesting'
+GRAPH_HARVESTING_DEFAULT = False
 
 #########################################
 # Communication data type

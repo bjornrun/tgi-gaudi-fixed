@@ -14,8 +14,9 @@ import pytest
 class TestPipelineCheckpoint(DistributedTest):
     world_size = 4
 
+    @pytest.mark.parametrize('compile_mode', [True, False])
     @pytest.mark.parametrize("zero_stage", [0, 1])
-    def test_checkpoint_pipe_engine(self, zero_stage, tmpdir):
+    def test_checkpoint_pipe_engine(self, zero_stage, compile_mode, tmpdir):
         skip_on_arch(min_arch=7)
 
         config_dict = {
@@ -49,13 +50,13 @@ class TestPipelineCheckpoint(DistributedTest):
                     "cycle_max_mom": 0.99,
                     "decay_mom_rate": 0.0
                 }
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         fp16 = config_dict['fp16']['enabled']
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
-            fp16 = False
 
         models = [LinearStackPipe(num_stages=2) for _ in range(2)]
         checkpoint_correctness_verification(config_dict=config_dict,

@@ -39,7 +39,7 @@ class NPU_Accelerator(DeepSpeedAccelerator):
 
     # Device APIs
     def device_name(self, device_index=None):
-        if device_index == None:
+        if device_index is None:
             return 'npu'
         return 'npu:{}'.format(device_index)
 
@@ -185,6 +185,17 @@ class NPU_Accelerator(DeepSpeedAccelerator):
     def is_triton_supported(self):
         return False
 
+    # Graph operations
+    def create_graph(self):
+        return None
+
+    def capture_to_graph(self, graph, pool=None, stream=None):
+        from deepspeed.runtime.utils import noop_context
+        return noop_context()
+
+    def replay_graph(self, graph):
+        return
+
     # Tensor operations
 
     @property
@@ -265,5 +276,8 @@ class NPU_Accelerator(DeepSpeedAccelerator):
         from torch.utils.cpp_extension import BuildExtension
         return BuildExtension
 
-    def get_optimizer(self, optimizer_name, cpu_optimization, model_parameters, **optimizer_parameters):
-        return None
+    def export_envs(self):
+        return ['ASCEND', 'HCCL', 'LD_LIBRARY', 'PATH']
+
+    def get_compile_backend(self):
+        return "inductor"

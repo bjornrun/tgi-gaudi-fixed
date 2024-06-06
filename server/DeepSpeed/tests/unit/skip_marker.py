@@ -4,50 +4,14 @@
 
 # DeepSpeed Team
 
-hpu_skip_tests = {}
+hpu_lazy_skip_tests = {}
 
-g1_skip_tests = {
-    "unit/runtime/zero/test_zero_context.py::TestSerialContext::test_scatter_halftype":
-    "FP16 datatype is not supported by Gaudi.",
-    "unit/runtime/test_autocast.py::TestAutoCastDisable::test_missing_amp_autocast[True]":
-    "FP16 datatype is not supported by Gaudi.",
-    "unit/inference/test_inference.py::TestAutoTensorParallelism::test[noCG-fp16-marian]":
-    "FP16 datatype is not supported by Gaudi.",
-    "unit/inference/test_checkpoint_sharding.py::TestCheckpointShardinAutoTP::test[EleutherAI/gpt-j-6B]":
-    "FP16 datatype is not supported by Gaudi.",
-    "unit/inference/test_checkpoint_sharding.py::TestCheckpointShardinAutoTP::test[facebook/opt-125m]":
-    "FP16 datatype is not supported by Gaudi.",
-    "unit/inference/test_checkpoint_sharding.py::TestCheckpointShardinAutoTP::test[EleutherAI/gpt-neo-125M]":
-    "FP16 datatype is not supported by Gaudi.",
-    "unit/inference/test_checkpoint_sharding.py::TestCheckpointShardinAutoTP::test[bigscience/bloom-560m]":
-    "FP16 datatype is not supported by Gaudi.",
-    "unit/inference/test_inference.py::TestAutoTensorParallelism::test_odd_world_size[fp16-marian]":
-    "FP16 datatype is not supported by Gaudi.",
-    "unit/runtime/zero/test_zero.py::TestEmptyParameterGroup::test_empty_param_groups[dtype0-True-True]":
-    "Skipping test due to segfault. SW-170285",
-    "unit/runtime/zero/test_zero.py::TestEmptyParameterGroup::test_empty_param_groups[dtype2-False-True]":
-    "Skipping test due to segfault. SW-170285",
-    "unit/runtime/zero/test_zero.py::TestEmptyParameterGroup::test_empty_param_groups[dtype2-True-True]":
-    "Skipping test due to segfault. SW-170285",
-    "unit/runtime/zero/test_zero.py::TestEmptyParameterGroup::test_empty_param_groups[dtype0-False-True]":
-    "Skipping test due to segfault. SW-170285",
-    "unit/runtime/zero/test_zero.py::TestZeroOffloadOptim::test[True]":
-    "Stuck",
+g1_lazy_skip_tests = {
     "unit/runtime/half_precision/test_bf16.py::TestZeroSupportedClientOptimizer::test[FusedAdam]":
     "Skipping test due to segfault. SW-170285",
-    "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[1048576-fp16]":
-    "Skipping test due to segfault then stuck. SW-174912",
-    "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[1024-fp16]":
-    "Skipping test due to segfault then stuck. SW-174912",
-    "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[128-fp16]":
-    "Skipping test due to segfault then stuck. SW-174912",
-    "unit/ops/adam/test_hybrid_adam.py::TestHybridAdam::test_hybrid_adam_equal[16-fp16]":
-    "FusedAdam test not supported. Test got stuck.",
     "unit/ops/adam/test_hybrid_adam.py::TestHybridAdam::test_hybrid_adam_equal[8-fp32]":
     "FusedAdam test not supported. Test got stuck.",
     "unit/ops/adam/test_hybrid_adam.py::TestHybridAdam::test_hybrid_adam_equal[16-fp32]":
-    "FusedAdam test not supported. Test got stuck.",
-    "unit/ops/adam/test_hybrid_adam.py::TestHybridAdam::test_hybrid_adam_equal[8-fp16]":
     "FusedAdam test not supported. Test got stuck.",
     "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[1024-fp32]":
     "FusedAdam test not supported. Test got stuck.",
@@ -55,61 +19,77 @@ g1_skip_tests = {
     "FusedAdam test not supported. Test got stuck.",
     "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[1048576-fp32]":
     "FusedAdam test not supported. Test got stuck.",
-    "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[64-fp16]":
-    "FusedAdam test not supported. Test got stuck.",
-    "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[22-fp16]":
-    "FusedAdam test not supported. Test got stuck.",
     "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[22-fp32]":
     "FusedAdam test not supported. Test got stuck.",
     "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[128-fp32]":
     "FusedAdam test not supported. Test got stuck.",
+    "unit/runtime/pipe/test_pipe.py::TestPipeCifar10::test_pipe_use_reentrant[topo_config2]":
+    "Stuck on eager mode",
+    "unit/runtime/pipe/test_pipe.py::TestPipeCifar10::test_pipe_use_reentrant[topo_config1]":
+    "Stuck on eager mode",
+    "unit/inference/test_human_eval.py::test_human_eval[codellama/CodeLlama-7b-Python-hf]":
+    "HPU is not supported on deepspeed-mii",
 }
 
-g2_skip_tests = {
-    "unit/runtime/zero/test_zero.py::TestEmptyParameterGroup::test_empty_param_groups[dtype0-True-True]":
-    "Skipping test due to segfault. SW-170285",
-    "unit/runtime/zero/test_zero.py::TestEmptyParameterGroup::test_empty_param_groups[dtype1-False-True]":
-    "Skipping test due to segfault. SW-170285",
-    "unit/runtime/zero/test_zero.py::TestEmptyParameterGroup::test_empty_param_groups[dtype1-True-True]":
-    "Skipping test due to segfault. SW-170285",
-    "unit/runtime/zero/test_zero.py::TestEmptyParameterGroup::test_empty_param_groups[dtype2-False-True]":
-    "Skipping test due to segfault. SW-170285",
-    "unit/runtime/zero/test_zero.py::TestEmptyParameterGroup::test_empty_param_groups[dtype2-True-True]":
-    "Skipping test due to segfault. SW-170285",
-    "unit/runtime/zero/test_zero.py::TestEmptyParameterGroup::test_empty_param_groups[dtype0-False-True]":
-    "Skipping test due to segfault. SW-170285",
-    "unit/runtime/zero/test_zero.py::TestZeroOffloadOptim::test[True]":
-    "Stuck",
+g2_lazy_skip_tests = {
     "unit/runtime/half_precision/test_bf16.py::TestZeroSupportedClientOptimizer::test[FusedAdam]":
-    "Skipping test due to segfault. SW-170285",
+    "Skipping test due to segfault. SW-175725.",
     "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[1048576-fp16]":
-    "Skipping test due to segfault then stuck. SW-174912",
+    "Skipping test due to segfault then stuck. SW-175725.",
     "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[1024-fp16]":
-    "Skipping test due to segfault then stuck. SW-174912",
+    "Skipping test due to segfault then stuck. SW-175725.",
     "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[128-fp16]":
-    "Skipping test due to segfault then stuck. SW-174912",
+    "Skipping test due to segfault then stuck. SW-175725.",
     "unit/ops/adam/test_hybrid_adam.py::TestHybridAdam::test_hybrid_adam_equal[16-fp16]":
-    "FusedAdam test not supported. Test got stuck.",
+    "FusedAdam test not supported. Test got stuck. SW-175725.",
     "unit/ops/adam/test_hybrid_adam.py::TestHybridAdam::test_hybrid_adam_equal[8-fp32]":
-    "FusedAdam test not supported. Test got stuck.",
+    "FusedAdam test not supported. Test got stuck. SW-175725.",
     "unit/ops/adam/test_hybrid_adam.py::TestHybridAdam::test_hybrid_adam_equal[16-fp32]":
-    "FusedAdam test not supported. Test got stuck.",
+    "FusedAdam test not supported. Test got stuck. SW-175725.",
     "unit/ops/adam/test_hybrid_adam.py::TestHybridAdam::test_hybrid_adam_equal[8-fp16]":
-    "FusedAdam test not supported. Test got stuck.",
+    "FusedAdam test not supported. Test got stuck. SW-175725.",
     "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[1024-fp32]":
-    "FusedAdam test not supported. Test got stuck.",
+    "FusedAdam test not supported. Test got stuck. SW-175725.",
     "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[64-fp32]":
-    "FusedAdam test not supported. Test got stuck.",
+    "FusedAdam test not supported. Test got stuck. SW-175725.",
     "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[1048576-fp32]":
-    "FusedAdam test not supported. Test got stuck.",
+    "FusedAdam test not supported. Test got stuck. SW-175725.",
     "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[64-fp16]":
-    "FusedAdam test not supported. Test got stuck.",
+    "FusedAdam test not supported. Test got stuck. SW-175725.",
     "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[22-fp16]":
-    "FusedAdam test not supported. Test got stuck.",
+    "FusedAdam test not supported. Test got stuck. SW-175725.",
     "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[22-fp32]":
-    "FusedAdam test not supported. Test got stuck.",
+    "FusedAdam test not supported. Test got stuck. SW-175725.",
     "unit/ops/adam/test_cpu_adam.py::TestCPUAdam::test_fused_adam_equal[128-fp32]":
-    "FusedAdam test not supported. Test got stuck.",
+    "FusedAdam test not supported. Test got stuck. SW-175725.",
+    "unit/runtime/half_precision/test_fp16.py::TestZeroSupportedClientOptimizer::test[FusedAdam-3]":
+    "synapse detected critical error. SW-176889",
+    "unit/runtime/half_precision/test_fp16.py::TestZeroSupportedClientOptimizer::test[FusedAdam-2]":
+    "synapse detected critical error. SW-176889",
+    "unit/runtime/half_precision/test_fp16.py::TestZeroSupportedClientOptimizer::test[FusedAdam-1]":
+    "synapse detected critical error. SW-176889",
+    "unit/runtime/half_precision/test_fp16.py::TestFP16OptimizerForMoE::test_fused_gradnorm":
+    "FusedAdam test not supported. Test got stuck. SW-175725.",
+    "unit/inference/test_human_eval.py::test_human_eval[codellama/CodeLlama-7b-Python-hf]":
+    "HPU is not supported on deepspeed-mii",
+}
+
+hpu_eager_skip_tests = {}
+
+g1_eager_skip_tests = {
+    "unit/inference/test_human_eval.py::test_human_eval[codellama/CodeLlama-7b-Python-hf]":
+    "HPU is not supported on deepspeed-mii",
+}
+
+g2_eager_skip_tests = {
+    "unit/moe/test_moe_tp.py::TestMOETensorParallel::test[False-False-2-2]":
+    "Skip, due to SW-182681",
+    "unit/moe/test_moe_tp.py::TestMOETensorParallel::test[False-True-1-2]":
+    "Skip, due to SW-182681",
+    "unit/moe/test_moe_tp.py::TestMOETensorParallel::test[True-True-1-2]":
+    "Skip, due to SW-182681",
+    "unit/inference/test_human_eval.py::test_human_eval[codellama/CodeLlama-7b-Python-hf]":
+    "HPU is not supported on deepspeed-mii",
 }
 
 gpu_skip_tests = {

@@ -21,6 +21,7 @@ import deepspeed.comm as dist
 import pytest
 from _pytest.outcomes import Skipped
 from _pytest.fixtures import FixtureLookupError, FixtureFunctionMarker
+from unit.util import hpu_lazy_enabled
 
 # Worker timeout for tests that hang
 DEEPSPEED_TEST_TIMEOUT = int(os.environ.get('DEEPSPEED_TEST_TIMEOUT', '600'))
@@ -86,8 +87,12 @@ def set_accelerator_visible():
             npu_smi = subprocess.check_output(['npu-smi', 'info', '-l'])
             num_accelerators = int(npu_smi.decode('utf-8').strip().split('\n')[0].split(':')[1].strip())
         elif get_accelerator().device_name() == 'hpu':
-            hl_smi = subprocess.check_output(['hl-smi', "-L"])
-            num_accelerators = re.findall(r"Module ID\s+:\s+(\d+)", hl_smi.decode())
+            try:
+                hl_smi = subprocess.check_output(['hl-smi', "-L"])
+                num_accelerators = re.findall(r"Module ID\s+:\s+(\d+)", hl_smi.decode())
+            except FileNotFoundError:
+                sim_list = subprocess.check_output(['ls', '-1', '/dev/accel'])
+                num_accelerators = re.findall(r"accel(\d+)", sim_list.decode())
             num_accelerators = sorted(num_accelerators, key=int)
             os.environ["HABANA_VISIBLE_MODULES"] = ",".join(num_accelerators)
         else:
@@ -123,6 +128,9 @@ class DistributedExec(ABC):
     requires_cuda_env = True
     reuse_dist_env = False
     non_daemonic_procs = False
+    #WA to SW-181871, until it is not fixed set non_daemonic_procs to True for eager mode.
+    if get_accelerator().device_name() == 'hpu':
+        non_daemonic_procs = not hpu_lazy_enabled()
     _pool_cache = {}
     exec_timeout = DEEPSPEED_TEST_TIMEOUT
 
@@ -181,7 +189,8 @@ class DistributedExec(ABC):
             # Shortcut to exit pytest in the case of a hanged test. This
             # usually means an environment error and the rest of tests will
             # hang (causing super long unit test runtimes)
-            pytest.exit("Test hanged, exiting", returncode=0)
+            pytest.exit("Test hanged, exiting", returncode=1)
+
         finally:
             # Tear down distributed environment and close process pools
             self._close_pool(pool, num_procs)
@@ -192,6 +201,12 @@ class DistributedExec(ABC):
             pytest.skip(skip_msgs[0])
 
     def _launch_non_daemonic_procs(self, num_procs):
+        #WA to SW-181871
+        if get_accelerator().device_name() == 'hpu':
+            if self.reuse_dist_env:
+                print("Ignoring reuse_dist_env for hpu")
+                self.reuse_dist_env = False
+
         assert not self.reuse_dist_env, "Cannot reuse distributed environment with non-daemonic processes"
 
         master_port = get_master_port()
@@ -217,7 +232,7 @@ class DistributedExec(ABC):
         if not any_done:
             for p in processes:
                 p.terminate()
-            pytest.exit("Test hanged, exiting", returncode=0)
+            pytest.exit("Test hanged, exiting", returncode=1)
 
         # Wait for all other processes to complete
         for p in processes:

@@ -205,6 +205,19 @@ class DeepSpeedAccelerator(ABC):
     def is_triton_supported(self):
         ...
 
+    # Graph operations
+    @abc.abstractmethod
+    def create_graph(self):
+        ...
+
+    @abc.abstractmethod
+    def capture_to_graph(self, graph, pool=None, stream=None):
+        ...
+
+    @abc.abstractmethod
+    def replay_graph(self, graph):
+        ...
+
     # Tensor operations
     @property
     @abc.abstractmethod
@@ -267,11 +280,14 @@ class DeepSpeedAccelerator(ABC):
     def get_op_builder(self, class_name):
         ...
 
-    # creates and returns an optimizer, specified by optimizer_name, when the accelerator has its own implementation
     @abc.abstractmethod
-    def get_optimizer(self, optimizer_name, cpu_optimization, model_parameters, **optimizer_parameters):
+    def get_compile_backend(self):
         ...
 
     @abc.abstractmethod
     def build_extension(self):
+        ...
+
+    @abc.abstractmethod
+    def export_envs(self):
         ...

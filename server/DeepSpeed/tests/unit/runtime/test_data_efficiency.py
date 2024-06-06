@@ -104,10 +104,6 @@ class TestDataEfficiency(DistributedTest):
             return data
 
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
         hidden_dim = 10
         model = SimpleModel(hidden_dim)
         dataset = random_dataset(20, hidden_dim, torch.device('cpu'), dtype=dtype)
@@ -165,10 +161,6 @@ class TestLegacyCurriculumScheduler(DistributedTest):
         ground_truths = {1: 1, 2: 1, 3: 2, 4: 2, 5: 3, 6: 3, 7: 4, 8: 4}
 
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
 
         model = Curriculum_SimpleModel(hidden_dim)
         model, _, _, _ = deepspeed.initialize(config=config_dict, model=model, model_parameters=model.parameters())
@@ -218,10 +210,6 @@ class TestLegacyCurriculumScheduler(DistributedTest):
         hidden_dim = 10
         ground_truths = {1: 2, 2: 4, 3: 4, 4: 6, 5: 6, 6: 8, 7: 8, 8: 10, 9: 10, 10: 10}
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
 
         model = Curriculum_SimpleModel(hidden_dim)
         model, _, _, _ = deepspeed.initialize(config=config_dict, model=model, model_parameters=model.parameters())

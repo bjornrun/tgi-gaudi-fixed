@@ -46,6 +46,7 @@ inline void writeAs(void* dst, const T& val)
 #define SIMD_OR(x, y) _mm512_or_ps(x, y)
 #define SIMD_XOR(x, y) _mm512_xor_ps(x, y)
 #define SIMD_WIDTH 16
+#if defined(ENABLE_BFLOAT16)
 static __m512 load_16_bf16_as_f32(const void* data)
 {
     __m256i a = readAs<__m256i>(data);     // use memcpy to avoid aliasing
@@ -87,7 +88,6 @@ static void store_16_f32_as_bf16_nearest(__m512 v, void* data)
     writeAs(data, res);
 }
 
-#if defined(ENABLE_BFLOAT16)
 #define SIMD_LOAD2(x, h) ((h) ? load_16_bf16_as_f32(x) : _mm512_loadu_ps(x))
 
 #define SIMD_STORE2(x, d, h) ((h) ? store_16_f32_as_bf16_nearest(d, x) : _mm512_storeu_ps(x, d))
@@ -115,8 +115,7 @@ static void store_16_f32_as_bf16_nearest(__m512 v, void* data)
 #define SIMD_XOR(x, y) _mm256_xor_ps(x, y)
 #define SIMD_WIDTH 8
 
-#define SIMD_LOAD2(x, h) \
-    ((h) ? _mm256_cvtph_ps(_mm_loadu_si128((const __m128i*)x)) : _mm256_loadu_ps(x))
+#if defined(ENABLE_BFLOAT16)
 __m256 load_8_bf16_as_f32(const float* data)
 {
     __m128i a = readAs<__m128i>(data);     // use memcpy to avoid aliasing
@@ -157,14 +156,12 @@ void store_8_f32_as_bf16_nearest(__m256 v, float* data)
 
     writeAs(data, res);
 }
-#if defined(ENABLE_BFLOAT16)
 #define SIMD_LOAD2(x, h) ((h) ? load_8_bf16_as_f32(x) : _mm256_loadu_ps(x))
 
 #define SIMD_STORE2(x, d, h) ((h) ? store_8_f32_as_bf16_nearest(d, x) : _mm256_storeu_ps(x, d))
 #else  // ENABLE_BFLOAT16
 #define SIMD_LOAD2(x, h) \
     ((h) ? _mm256_cvtph_ps(_mm_loadu_si128((const __m128i*)(x))) : _mm256_loadu_ps(x))
-
 #define SIMD_STORE2(x, d, h)                                                                \
     ((h) ? _mm_store_ps(x, _mm_castsi128_ps(_mm256_cvtps_ph(d, _MM_FROUND_TO_NEAREST_INT))) \
          : _mm256_storeu_ps(x, d))

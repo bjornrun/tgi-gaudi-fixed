@@ -29,8 +29,6 @@ class TestStableDiffusion(DistributedTest):
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         device = torch.device(f"{dev}:{local_rank}")
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            dtype = torch.bfloat16
         pipe = DiffusionPipeline.from_pretrained(model, torch_dtype=dtype)
         pipe = pipe.to(device)
         baseline_image = pipe(prompt, guidance_scale=7.5, generator=generator).images[0]

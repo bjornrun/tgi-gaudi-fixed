@@ -8,7 +8,8 @@ import torch
 from unit.common import DistributedTest
 
 from transformers import VisionEncoderDecoderModel
-from transformers.deepspeed import HfDeepSpeedConfig
+from transformers.integrations.deepspeed import HfDeepSpeedConfig
+
 import deepspeed
 
 

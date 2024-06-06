@@ -1,15 +1,5 @@
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
-import torch
-
-extra_cuda_cflags = ["-lineinfo", "-O3"]
-
-if torch.version.hip:
-    extra_cuda_cflags += ["-DHIPBLAS_USE_HIP_HALF"]
-
-extra_compile_args = {
-    "nvcc": extra_cuda_cflags,
-}
 
 setup(
     name="exllamav2_kernels",
@@ -21,7 +11,6 @@ setup(
                 "exllamav2_kernels/cuda/q_matrix.cu",
                 "exllamav2_kernels/cuda/q_gemm.cu",
             ],
-            extra_compile_args=extra_compile_args,
         )
     ],
     cmdclass={"build_ext": BuildExtension},

@@ -12,7 +12,6 @@ per rank for training.
 import os
 import re
 import sys
-import shlex
 import json
 import base64
 import argparse
@@ -392,9 +391,6 @@ def parse_num_nodes(str_num_nodes: str, elastic_training: bool):
 def main(args=None):
     args = parse_args(args)
 
-    # For when argparse interprets remaining args as a single string
-    args.user_args = shlex.split(" ".join(list(map(lambda x: x if x.startswith("-") else f'"{x}"', args.user_args))))
-
     if args.elastic_training:
         assert args.master_addr != "", "Master Addr is required when elastic training is enabled"
 
@@ -450,7 +446,11 @@ def main(args=None):
     if not args.master_addr:
         assert multi_node_exec
         first_host = list(active_resources.keys())[0]
-        hostname_cmd = [f"ssh {first_host} hostname -I"]
+        ssh_check_cmd = "ssh "
+        if args.ssh_port is not None:
+            ssh_check_cmd += f" -p {args.ssh_port}"
+        ssh_check_cmd += f" {first_host} hostname -I"
+        hostname_cmd = [ssh_check_cmd]
         try:
             result = subprocess.check_output(hostname_cmd, shell=True)
         except subprocess.CalledProcessError as err:
@@ -559,17 +559,15 @@ def main(args=None):
                 # key exists in launcher env -> var list should be used
                 excluded_vars += var_list
 
-        exports = ""
+        # load envs from accelerator
+        exports = EXPORT_ENVS + get_accelerator().export_envs()
         for var in env.keys():
-            if any([var.startswith(name) for name in EXPORT_ENVS]):
+            if any([var.startswith(name) for name in exports]):
                 if not any([var == name for name in excluded_vars]):
                     runner.add_export(var, env[var])
 
         for environ_path in DEEPSPEED_ENVIRONMENT_PATHS:
-            environ_file = DEEPSPEED_ENVIRONMENT_NAME
-            # handle if users to enter path for `DS_ENV_FILE`
-            if not os.path.isfile(environ_file):
-                environ_file = os.path.join(environ_path, DEEPSPEED_ENVIRONMENT_NAME)
+            environ_file = os.path.join(environ_path, DEEPSPEED_ENVIRONMENT_NAME)
             if os.path.isfile(environ_file):
                 logger.info(f"deepspeed_env file = {environ_file}")
                 with open(environ_file, 'r') as fd:

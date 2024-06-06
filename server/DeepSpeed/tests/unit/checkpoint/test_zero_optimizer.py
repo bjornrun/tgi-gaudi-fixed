@@ -12,6 +12,7 @@ from deepspeed.runtime.utils import required_torch_version
 
 from unit.common import DistributedTest, DistributedFixture
 from unit.simple_model import *
+from unit.util import hpu_lazy_enabled
 
 from unit.checkpoint.common import *
 
@@ -21,8 +22,9 @@ import pytest
 class TestZeROCheckpoint(DistributedTest):
     world_size = 2
 
+    @pytest.mark.parametrize('compile_mode', [True, False])
     @pytest.mark.parametrize('zero_stage', [3])
-    def test_pipeline_checkpoint_loading(self, tmpdir, zero_stage):
+    def test_pipeline_checkpoint_loading(self, tmpdir, zero_stage, compile_mode):
         config_dict = {
             "train_batch_size": 2,
             "optimizer": {
@@ -35,6 +37,10 @@ class TestZeROCheckpoint(DistributedTest):
             "zero_optimization": {
                 "stage": zero_stage,
                 "pipeline_loading_checkpoint": True,
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         hidden_dim = 10
@@ -43,11 +49,12 @@ class TestZeROCheckpoint(DistributedTest):
             models = [SimpleModel(hidden_dim, empty_grad=False) for _ in range(2)]
         checkpoint_correctness_verification(config_dict, models, hidden_dim, tmpdir, load_module_only=True)
 
+    @pytest.mark.parametrize('compile_mode', [True, False])
     @pytest.mark.parametrize('zero_stage, use_cpu_offload, adam_optimizer', [(1, False, 'Adam'), (2, False, 'Adam'),
                                                                              (2, True, 'deepspeed_adam'),
                                                                              (3, False, 'Adam'),
                                                                              (3, True, 'deepspeed_adam')])
-    def test_load_optimizer_state(self, tmpdir, zero_stage, use_cpu_offload, adam_optimizer):
+    def test_load_optimizer_state(self, tmpdir, zero_stage, use_cpu_offload, adam_optimizer, compile_mode):
         if use_cpu_offload and not deepspeed.ops.__compatible_ops__[CPUAdamBuilder.NAME]:
             pytest.skip("cpu-adam is not compatible")
 
@@ -71,23 +78,22 @@ class TestZeROCheckpoint(DistributedTest):
             "zero_optimization": {
                 "stage": zero_stage,
                 "cpu_offload": use_cpu_offload
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         hidden_dim = 10
         fp16 = True
         zero3_init_dtype = None
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
-            fp16 = False
-            zero3_init_dtype = torch.float32
 
         if zero_stage == 3:
             with deepspeed.zero.Init(dtype=zero3_init_dtype):
                 models = [SimpleModel(hidden_dim, empty_grad=False) for _ in range(2)]
         else:
             models = [SimpleModel(hidden_dim, empty_grad=False) for _ in range(2)]
-            if get_accelerator().device_name() == 'hpu':
+            if hpu_lazy_enabled():
                 device = get_accelerator().device_name()
                 models = [model.to(device) for model in models]
 
@@ -98,11 +104,12 @@ class TestZeROCheckpoint(DistributedTest):
                                             fp16=fp16,
                                             load_optimizer_states=True)
 
+    @pytest.mark.parametrize('compile_mode', [True, False])
     @pytest.mark.parametrize('zero_stage, use_cpu_offload, adam_optimizer', [(1, False, "Adam"), (2, False, "Adam"),
                                                                              (2, True, 'deepspeed_adam'),
                                                                              (3, False, 'Adam'),
                                                                              (3, True, 'deepspeed_adam')])
-    def test_not_load_optimizer_state(self, tmpdir, zero_stage, use_cpu_offload, adam_optimizer):
+    def test_not_load_optimizer_state(self, tmpdir, zero_stage, use_cpu_offload, adam_optimizer, compile_mode):
         if use_cpu_offload and not deepspeed.ops.__compatible_ops__[CPUAdamBuilder.NAME]:
             pytest.skip("cpu-adam is not compatible")
 
@@ -124,16 +131,15 @@ class TestZeROCheckpoint(DistributedTest):
             "zero_optimization": {
                 "stage": zero_stage,
                 "cpu_offload": use_cpu_offload
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         hidden_dim = 10
         fp16 = True
         zero3_init_dtype = None
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
-            fp16 = False
-            zero3_init_dtype = torch.float32
 
         if zero_stage == 3:
             global DeepSpeedZeroOptimizer_Stage3
@@ -142,7 +148,7 @@ class TestZeROCheckpoint(DistributedTest):
                 models = [SimpleModel(hidden_dim, empty_grad=False) for _ in range(2)]
         else:
             models = [SimpleModel(hidden_dim, empty_grad=False) for _ in range(2)]
-            if get_accelerator().device_name() == 'hpu':
+            if hpu_lazy_enabled():
                 device = get_accelerator().device_name()
                 models = [model.to(device) for model in models]
 
@@ -153,8 +159,9 @@ class TestZeROCheckpoint(DistributedTest):
                                             fp16=fp16,
                                             load_optimizer_states=False)
 
+    @pytest.mark.parametrize('compile_mode', [True, False])
     @pytest.mark.parametrize('zero_stage', [1, 2])
-    def test_hybrid_optimizer_state(self, tmpdir, zero_stage):
+    def test_hybrid_optimizer_state(self, tmpdir, zero_stage, compile_mode):
         config_dict = {
             "train_micro_batch_size_per_gpu": 2,
             "gradient_accumulation_steps": 2,
@@ -166,17 +173,17 @@ class TestZeROCheckpoint(DistributedTest):
             "fp16": {
                 "enabled": True,
                 "initial_scale_power": 8
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         hidden_dim = 10
         fp16 = True
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
-            fp16 = False
 
         models = [SimpleModel(hidden_dim=hidden_dim) for _ in range(2)]
-        if get_accelerator().device_name() == 'hpu':
+        if hpu_lazy_enabled():
             device = get_accelerator().device_name()
             models = [model.to(device) for model in models]
         optimizers = [HybridStateOptimizer(model.parameters()) for model in models]
@@ -189,8 +196,9 @@ class TestZeROCheckpoint(DistributedTest):
                                             fp16=fp16,
                                             load_optimizer_states=True)
 
+    @pytest.mark.parametrize('compile_mode', [True, False])
     @pytest.mark.parametrize('zero_stage', [0, 1, 2, 3])
-    def test_load_module_only(self, tmpdir, zero_stage):
+    def test_load_module_only(self, tmpdir, zero_stage, compile_mode):
         config_dict = {
             "train_batch_size": 2,
             "optimizer": {
@@ -202,23 +210,22 @@ class TestZeROCheckpoint(DistributedTest):
             },
             "zero_optimization": {
                 "stage": zero_stage,
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         hidden_dim = 10
         fp16 = True
         zero3_init_dtype = None
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
-            fp16 = False
-            zero3_init_dtype = torch.float32
 
         if zero_stage == 3:
             with deepspeed.zero.Init(dtype=zero3_init_dtype):
                 models = [SimpleModel(hidden_dim, empty_grad=False) for _ in range(2)]
         else:
             models = [SimpleModel(hidden_dim, empty_grad=False) for _ in range(2)]
-            if get_accelerator().device_name() == 'hpu':
+            if hpu_lazy_enabled():
                 device = get_accelerator().device_name()
                 models = [model.to(device) for model in models]
 
@@ -228,7 +235,7 @@ class TestZeROCheckpoint(DistributedTest):
 class ws4_model_checkpoint(DistributedFixture):
     world_size = 4
 
-    def run(self, class_tmpdir, elastic_save, load_optim):
+    def run(self, class_tmpdir, elastic_save, load_optim, compile_mode):
         ds_config = {
             "train_batch_size": 4,
             "optimizer": {
@@ -241,16 +248,16 @@ class ws4_model_checkpoint(DistributedFixture):
             "zero_optimization": {
                 "stage": 2,
                 "elastic_checkpoint": elastic_save
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         hidden_dim = 10
         model = SimpleModel(hidden_dim)
 
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            ds_config["fp16"]["enabled"] = False
-            ds_config["fp32"] = {"enabled": True}
-            dtype = torch.float
         model, _, _, _ = deepspeed.initialize(config=ds_config, model=model, model_parameters=model.parameters())
         data_loader = random_dataloader(model=model,
                                         total_samples=8,
@@ -267,13 +274,14 @@ class ws4_model_checkpoint(DistributedFixture):
         model.save_checkpoint(class_tmpdir)
 
 
+@pytest.mark.parametrize('compile_mode', [True, False])
 @pytest.mark.parametrize("elastic_save", [True, False])
 @pytest.mark.parametrize("elastic_load", [True, False])
 @pytest.mark.parametrize("load_optim", [True, False])
 class TestZeROElasticCheckpoint(DistributedTest):
     world_size = 2
 
-    def test_elastic_checkpoint_fixed_dp(self, tmpdir, elastic_save, elastic_load, load_optim):
+    def test_elastic_checkpoint_fixed_dp(self, tmpdir, elastic_save, elastic_load, load_optim, compile_mode):
         ds_config = {
             "train_batch_size": 2,
             "optimizer": {
@@ -286,6 +294,10 @@ class TestZeROElasticCheckpoint(DistributedTest):
             "zero_optimization": {
                 "stage": 2,
                 "elastic_checkpoint": elastic_save
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         hidden_dim = 10
@@ -297,24 +309,18 @@ class TestZeROElasticCheckpoint(DistributedTest):
         models = [SimpleModel(hidden_dim) for _ in range(2)]
 
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            ds_config["fp16"]["enabled"] = False
-            ds_config["fp32"] = {"enabled": True}
-            dtype = torch.float
         model, _, _, _ = deepspeed.initialize(config=ds_config,
                                               model=models[0],
                                               model_parameters=models[0].parameters())
-        data_loader = random_dataloader(model=model,
-                                        total_samples=8,
-                                        hidden_dim=hidden_dim,
-                                        device=model.device,
-                                        dtype=dtype)
+        run_steps = 8
+        data_loader = random_dataloader(model=model, hidden_dim=hidden_dim, device=model.device, dtype=dtype)
         for n, batch in enumerate(data_loader):
             loss = model(batch[0], batch[1])
             model.backward(loss)
             model.step()
         if load_optim:
-            torch.save(model.optimizer.optimizer.state_dict(), os.path.join(tmpdir, 'opt-state-dict'))
+            opt_state_dict_file = f'opt-state-dict_rank{dist.get_rank()}'
+            torch.save(model.optimizer.optimizer.state_dict(), os.path.join(tmpdir, opt_state_dict_file))
         model.save_checkpoint(tmpdir)
 
         ds_config["zero_optimization"]["elastic_checkpoint"] = elastic_load
@@ -324,10 +330,9 @@ class TestZeROElasticCheckpoint(DistributedTest):
         model.load_checkpoint(tmpdir, load_optimizer_states=load_optim)
 
         if load_optim:
-            saved_sd = torch.load(os.path.join(tmpdir, 'opt-state-dict'))
+            saved_sd = torch.load(os.path.join(tmpdir, opt_state_dict_file))
             curr_sd = model.optimizer.optimizer.state_dict()
-            for curr_param_group, saved_param_group in zip(curr_sd['param_groups'], saved_sd['param_groups']):
-                compare_state_dicts(curr_param_group, saved_param_group, expected_mismatch_keys)
+            compare_opt_state_dicts(curr_sd, saved_sd, expected_mismatch_keys)
 
         data_loader = random_dataloader(model=model,
                                         total_samples=8,
@@ -340,7 +345,7 @@ class TestZeROElasticCheckpoint(DistributedTest):
             model.step()
 
     def test_elastic_checkpoint_change_dp(self, ws4_model_checkpoint, class_tmpdir, elastic_save, elastic_load,
-                                          load_optim):
+                                          load_optim, compile_mode):
         ds_config = {
             "train_batch_size": 4,
             "optimizer": {
@@ -353,14 +358,15 @@ class TestZeROElasticCheckpoint(DistributedTest):
             "zero_optimization": {
                 "stage": 2,
                 "elastic_checkpoint": elastic_load
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         hidden_dim = 10
         model = SimpleModel(hidden_dim)
 
-        if os.getenv("REPLACE_FP16", default=None):
-            ds_config["fp16"]["enabled"] = False
-            ds_config["fp32"] = {"enabled": True}
         # Load checkpoint with dp world size = 2
         model, _, _, _ = deepspeed.initialize(config=ds_config, model=model, model_parameters=model.parameters())
         if load_optim:
@@ -370,11 +376,12 @@ class TestZeROElasticCheckpoint(DistributedTest):
             model.load_checkpoint(class_tmpdir, load_optimizer_states=load_optim)
 
 
+@pytest.mark.parametrize('compile_mode', [True, False])
 class TestZeROSaveLoadEdgeCase(DistributedTest):
     world_size = 2
 
     @pytest.mark.parametrize('zero_stage', [0, 1, 2, 3])
-    def test_immediate_save_load(self, tmpdir, zero_stage):
+    def test_immediate_save_load(self, tmpdir, zero_stage, compile_mode):
         config_dict = {
             "train_batch_size": 4,
             "optimizer": {
@@ -386,14 +393,15 @@ class TestZeROSaveLoadEdgeCase(DistributedTest):
             },
             "zero_optimization": {
                 "stage": zero_stage,
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         hidden_dim = 10
         model = SimpleModel(hidden_dim)
 
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
         ds_model = create_deepspeed_model(config_dict=config_dict, model=model, base_optimizer=None)
         ds_model.save_checkpoint(tmpdir)
         ds_model.load_checkpoint(tmpdir,
@@ -402,7 +410,7 @@ class TestZeROSaveLoadEdgeCase(DistributedTest):
                                  load_module_only=False)
 
     @pytest.mark.parametrize('zero_stage', [0, 1, 2, 3])
-    def test_load_immediate_save(self, tmpdir, zero_stage):
+    def test_load_immediate_save(self, tmpdir, zero_stage, compile_mode):
         config_dict = {
             "train_batch_size": 4,
             "optimizer": {
@@ -414,6 +422,10 @@ class TestZeROSaveLoadEdgeCase(DistributedTest):
             },
             "zero_optimization": {
                 "stage": zero_stage,
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         hidden_dim = 10
@@ -421,10 +433,6 @@ class TestZeROSaveLoadEdgeCase(DistributedTest):
 
         # 1. pretrain a model and save it
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
-            dtype = torch.float
         ds_model = create_deepspeed_model(config_dict=config_dict, model=model, base_optimizer=None)
         data_loader = random_dataloader(model=ds_model,
                                         total_samples=1,
@@ -448,7 +456,7 @@ class TestZeROSaveLoadEdgeCase(DistributedTest):
         ds_model.save_checkpoint(tmpdir)
 
     @pytest.mark.parametrize('zero_stage', [0, 1, 2, 3])
-    def test_save_before_accum_grad_is_done(self, tmpdir, zero_stage):
+    def test_save_before_accum_grad_is_done(self, tmpdir, zero_stage, compile_mode):
         config_dict = {
             "optimizer": {
                 "type": 'Adam'
@@ -461,6 +469,10 @@ class TestZeROSaveLoadEdgeCase(DistributedTest):
                 "stage": zero_stage,
                 "stage3_gather_fp16_weights_on_model_save": True,
             },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
+            },
             "gradient_accumulation_steps": 2,
             "train_micro_batch_size_per_gpu": 1,
             "train_batch_size": 4,
@@ -469,10 +481,6 @@ class TestZeROSaveLoadEdgeCase(DistributedTest):
         model = SimpleModel(hidden_dim)
 
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
-            dtype = torch.float
         # This test reproduces a bug where one tries to retrieve a 16bit model before grad_accum
         # cycle was completed.
         # So we config grad_accum=2 and step only once and save_16bit_model
@@ -498,11 +506,12 @@ class TestZeROSaveLoadEdgeCase(DistributedTest):
         ds_model.save_checkpoint(tmpdir)
 
 
+@pytest.mark.parametrize('compile_mode', [True, False])
 class TestZeROCheckpointFrozenWeights(DistributedTest):
     world_size = 2
 
     @pytest.mark.parametrize('zero_stage', [1, 2, 3])
-    def test_load_optimizer_state(self, tmpdir, zero_stage):
+    def test_load_optimizer_state(self, tmpdir, zero_stage, compile_mode):
 
         config_dict = {
             "train_batch_size": 2,
@@ -523,21 +532,20 @@ class TestZeROCheckpointFrozenWeights(DistributedTest):
             "wall_clock_breakdown": True,
             "zero_optimization": {
                 "stage": zero_stage
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         fp16 = True
         dtype = None
-        if os.getenv("REPLACE_FP16", default=None):
-            fp16 = False
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
-            dtype = torch.float32
 
         hidden_dim = 10
 
         with deepspeed.zero.Init(enabled=zero_stage == 3, dtype=dtype):
             models = [SimpleFrozenModel(hidden_dim, empty_grad=False) for _ in range(2)]
-            if get_accelerator().device_name() == 'hpu':
+            if hpu_lazy_enabled():
                 device = get_accelerator().device_name()
                 models = [model.to(device) for model in models]
 
@@ -549,7 +557,7 @@ class TestZeROCheckpointFrozenWeights(DistributedTest):
                                             fp16=fp16)
 
     @pytest.mark.parametrize('zero_stage', [1, 2, 3])
-    def test_not_load_optimizer_state(self, tmpdir, zero_stage):
+    def test_not_load_optimizer_state(self, tmpdir, zero_stage, compile_mode):
 
         config_dict = {
             "train_batch_size": 2,
@@ -568,19 +576,18 @@ class TestZeROCheckpointFrozenWeights(DistributedTest):
             },
             "zero_optimization": {
                 "stage": zero_stage
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         hidden_dim = 10
         fp16 = True
         dtype = None
-        if os.getenv("REPLACE_FP16", default=None):
-            fp16 = False
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
-            dtype = torch.float32
         with deepspeed.zero.Init(enabled=zero_stage == 3, dtype=dtype):
             models = [SimpleFrozenModel(hidden_dim, empty_grad=False) for _ in range(2)]
-            if get_accelerator().device_name() == 'hpu':
+            if hpu_lazy_enabled():
                 device = get_accelerator().device_name()
                 models = [model.to(device) for model in models]
 
@@ -592,7 +599,7 @@ class TestZeROCheckpointFrozenWeights(DistributedTest):
                                             fp16=fp16)
 
     @pytest.mark.parametrize('zero_stage', [1, 2, 3])
-    def test_load_module_only(self, tmpdir, zero_stage):
+    def test_load_module_only(self, tmpdir, zero_stage, compile_mode):
         config_dict = {
             "train_batch_size": 2,
             "optimizer": {
@@ -604,26 +611,25 @@ class TestZeROCheckpointFrozenWeights(DistributedTest):
             },
             "zero_optimization": {
                 "stage": zero_stage,
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         hidden_dim = 10
         fp16 = True
         dtype = None
-        if os.getenv("REPLACE_FP16", default=None):
-            fp16 = False
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
-            dtype = torch.float32
         with deepspeed.zero.Init(enabled=zero_stage == 3, dtype=dtype):
             models = [SimpleFrozenModel(hidden_dim, empty_grad=False) for _ in range(2)]
-            if get_accelerator().device_name() == 'hpu':
+            if hpu_lazy_enabled():
                 device = get_accelerator().device_name()
                 models = [model.to(device) for model in models]
 
         checkpoint_correctness_verification(config_dict, models, hidden_dim, tmpdir, load_module_only=True, fp16=fp16)
 
     @pytest.mark.parametrize('zero_stage', [1, 2])
-    def test_save_exclude_frozen_weights(self, tmpdir, zero_stage):
+    def test_save_exclude_frozen_weights(self, tmpdir, zero_stage, compile_mode):
         world_size = 1
         config_dict = {
             "train_micro_batch_size_per_gpu": 1,
@@ -636,6 +642,10 @@ class TestZeROCheckpointFrozenWeights(DistributedTest):
             },
             "zero_optimization": {
                 "stage": zero_stage,
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         hidden_dim = 10
@@ -671,7 +681,7 @@ class TestZeROCheckpointFrozenWeights(DistributedTest):
         assert loaded_trainable_param_names == trainable_param_names
 
     @pytest.mark.parametrize('zero_stage', [1, 2])
-    def test_save_exclude_custom_frozen_weights(self, tmpdir, zero_stage):
+    def test_save_exclude_custom_frozen_weights(self, tmpdir, zero_stage, compile_mode):
         world_size = 1
         config_dict = {
             "train_micro_batch_size_per_gpu": 1,
@@ -684,14 +694,13 @@ class TestZeROCheckpointFrozenWeights(DistributedTest):
             },
             "zero_optimization": {
                 "stage": zero_stage,
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         hidden_dim = 10
-        if os.getenv("REPLACE_FP16", default=None):
-            fp16 = False
-            config_dict["fp16"]["enabled"] = False
-            config_dict["bf16"] = {"enabled": True}
-            dtype = torch.float32
 
         model = SimpleFrozenModel(hidden_dim, empty_grad=False)
 
@@ -720,9 +729,10 @@ class TestZeROCheckpointFrozenWeights(DistributedTest):
 class TestSaveTensorClone(DistributedTest):
     world_size = 1
 
+    @pytest.mark.parametrize('compile_mode', [True, False])
     @pytest.mark.parametrize('zero_stage', [1, 2])
     @pytest.mark.parametrize('use_cpu_device', [True, False])
-    def test_save_tensor_clone(self, tmpdir, zero_stage, use_cpu_device):
+    def test_save_tensor_clone(self, tmpdir, zero_stage, use_cpu_device, compile_mode):
 
         ds_config = {
             "optimizer": {
@@ -731,13 +741,14 @@ class TestSaveTensorClone(DistributedTest):
             "zero_optimization": {
                 "stage": zero_stage
             },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
+            },
             "train_batch_size": 1,
             "train_micro_batch_size_per_gpu": 1
         }
         dtype = torch.float16
-        if os.getenv("REPLACE_FP16", default=None):
-            dtype = torch.bfloat16
-            ds_config["bf16"] = {"enabled": True}
         hidden_dim = 1024
         model = SimpleModel(hidden_dim, nlayers=4).to(dtype=dtype)
         ref_model_state_dict = model.state_dict()
@@ -759,8 +770,9 @@ class TestZeRONonDistributed(DistributedTest):
     world_size = 1
     init_distributed = False
 
+    @pytest.mark.parametrize('compile_mode', [True, False])
     @pytest.mark.parametrize('zero_stage', [1, 2, 3])
-    def test_chmod_exception_handling(self, monkeypatch, zero_stage):
+    def test_chmod_exception_handling(self, monkeypatch, zero_stage, compile_mode):
 
         config_dict = {
             "optimizer": {
@@ -769,6 +781,10 @@ class TestZeRONonDistributed(DistributedTest):
             "train_batch_size": 1,
             "zero_optimization": {
                 "stage": zero_stage
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         args = SimpleNamespace(local_rank=0)

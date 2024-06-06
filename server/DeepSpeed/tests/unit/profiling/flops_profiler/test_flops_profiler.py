@@ -6,7 +6,6 @@
 import torch
 import pytest
 import deepspeed
-import os
 from deepspeed.profiling.flops_profiler import get_model_profile
 from unit.simple_model import SimpleModel, random_dataloader
 from unit.common import DistributedTest
@@ -84,10 +83,6 @@ class TestFlopsProfiler(DistributedTest):
             },
         }
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
 
         hidden_dim = 10
         model = SimpleModel(hidden_dim, empty_grad=False)

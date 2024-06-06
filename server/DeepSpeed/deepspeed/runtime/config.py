@@ -169,10 +169,17 @@ def get_bfloat16_enabled(param_dict):
     return False
 
 
-def get_bfloat16_accumulate_grads_via_hooks(param_dict):
+def get_fp8_optimizer_enabled(param_dict):
+    if FP8_OPTIMIZER in param_dict.keys():
+        return get_scalar_param(param_dict[FP8_OPTIMIZER], FP8_OPTIMIZER_ENABLED, FP8_OPTIMIZER_ENABLED_DEFAULT)
+    return FP8_OPTIMIZER_ENABLED_DEFAULT
+
+
+def get_bfloat16_immediate_grad_update(param_dict):
     for key in [BFLOAT16, BFLOAT16_OLD]:
         if key in param_dict.keys():
-            return get_scalar_param(param_dict[key], BFLOAT16_GRAD_ACC_VIA_HOOKS, BFLOAT16_GRAD_ACC_VIA_HOOKS_DEFAULT)
+            return get_scalar_param(param_dict[key], BFLOAT16_IMMEDIATE_GRAD_UPDATE,
+                                    BFLOAT16_IMMEDIATE_GRAD_UPDATE_DEFAULT)
     return False
 
 
@@ -285,6 +292,10 @@ def get_dump_state(param_dict):
 
 def get_gradient_clipping(param_dict):
     return get_scalar_param(param_dict, GRADIENT_CLIPPING, GRADIENT_CLIPPING_DEFAULT)
+
+
+def get_graph_harvesting(param_dict):
+    return get_scalar_param(param_dict, GRAPH_HARVESTING, GRAPH_HARVESTING_DEFAULT)
 
 
 def get_sparse_attention(param_dict):
@@ -825,9 +836,10 @@ class DeepSpeedConfig(object):
         self.fp16_enabled = get_fp16_enabled(param_dict)
         self.fp16_auto_cast = get_fp16_auto_cast(param_dict)
         self.bfloat16_enabled = get_bfloat16_enabled(param_dict)
-        self.bfloat16_accumulate_grads_via_hooks = get_bfloat16_accumulate_grads_via_hooks(param_dict)
+        self.bfloat16_immediate_grad_update = get_bfloat16_immediate_grad_update(param_dict)
         assert not (self.fp16_enabled
                     and self.bfloat16_enabled), 'bfloat16 and fp16 modes cannot be simultaneously enabled'
+        self.fp8_optimizer_enabled = get_fp8_optimizer_enabled(param_dict)
         self.fp16_master_weights_and_gradients = get_fp16_master_weights_and_grads_enabled(param_dict)
         self.amp_enabled = get_amp_enabled(param_dict)
         self.amp_params = get_amp_params(param_dict)
@@ -836,6 +848,7 @@ class DeepSpeedConfig(object):
         self.dynamic_loss_scale_args = get_dynamic_loss_scale_args(param_dict)
 
         self.compression_config = get_compression_config(param_dict)
+        self.graph_harvesting = get_graph_harvesting(param_dict)
 
         self.optimizer_name = get_optimizer_name(param_dict)
         if (self.optimizer_name is not None and self.optimizer_name.lower() in DEEPSPEED_OPTIMIZERS):

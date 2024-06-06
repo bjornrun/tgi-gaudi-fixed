@@ -48,8 +48,6 @@ class TestHybridEngineLlama(DistributedTest):
         _ = [model.model.layers.pop(-1) for _ in range(8)]
         dev = get_accelerator().device_name()
         dtype = torch.float16
-        if os.getenv("REPLACE_FP16", default=None):
-            dtype = torch.bfloat16
         model = model.to(dtype=dtype)
         model = model.to(f'{dev}:{local_rank}')
         return model
@@ -77,9 +75,6 @@ class TestHybridEngineLlama(DistributedTest):
         base_out = self._generate(model, tokenizer, prompt)
 
         ds_config = {"train_batch_size": 1, "fp16": {"enabled": True}, "hybrid_engine": {"enabled": True}}
-        if os.getenv("REPLACE_FP16", default=None):
-            ds_config["fp16"]["enabled"] = False
-            ds_config["bf16"] = {"enabled": True}
         model, *_ = deepspeed.initialize(model=model, config=ds_config)
 
         model.eval()
@@ -97,9 +92,6 @@ class TestHybridEngineLlama(DistributedTest):
         prompt = self.get_prompt(batch_size)
 
         ds_config = {"train_batch_size": 1, "fp16": {"enabled": True}, "hybrid_engine": {"enabled": True}}
-        if os.getenv("REPLACE_FP16", default=None):
-            ds_config["fp16"]["enabled"] = False
-            ds_config["bf16"] = {"enabled": True}
         model, *_ = deepspeed.initialize(model=model, config=ds_config)
 
         model.eval()

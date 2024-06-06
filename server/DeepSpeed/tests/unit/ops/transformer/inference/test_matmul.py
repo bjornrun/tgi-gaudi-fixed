@@ -44,8 +44,6 @@ def run_matmul_ds(a, b, use_triton_ops=False):
 def test_matmul_4d(B, H, M, K, N, dtype, use_triton_ops):
     if not deepspeed.HAS_TRITON and use_triton_ops:
         pytest.skip("triton has to be installed for the test")
-    if not deepspeed.accelerator.get_accelerator().is_triton_supported() and use_triton_ops:
-        pytest.skip(f"triton is not supported by {deepspeed.accelerator.get_accelerator().device_name()}")
 
     # skip autotune in testing
     from deepspeed.ops.transformer.inference.triton.matmul_ext import fp16_matmul

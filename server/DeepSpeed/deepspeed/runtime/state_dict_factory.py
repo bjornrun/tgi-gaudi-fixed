@@ -9,7 +9,6 @@ import copy
 import collections
 import json
 from abc import ABC, abstractmethod
-from deepspeed.accelerator import get_accelerator
 
 from deepspeed.utils import logger
 from deepspeed.runtime.checkpoint_engine.torch_checkpoint_engine import TorchCheckpointEngine
@@ -52,13 +51,6 @@ class SDLoaderBase(ABC):
         self.module_key = None
         self.ckpt_list = ckpt_list
         self.version = version
-        if get_accelerator().device_name() == 'hpu':
-            self.map_location = torch.device("cpu")
-        else:
-            # From https://pytorch.org/docs/stable/generated/torch.load.html:
-            #   "The storage argument will be the initial deserialization of the storage, residing on the CPU."
-            # Therefore, we can use storage argument
-            self.map_location = lambda storage, loc: storage
         self.checkpoint_engine = TorchCheckpointEngine() if checkpoint_engine is None else checkpoint_engine
         self.check_ckpt_list()
 
@@ -102,7 +94,8 @@ class SDLoaderBase(ABC):
         if num_ckpt == mp_world_size:
             assert os.path.exists(load_path)
             #logger.info(f'rank: {mp_rank} loading checkpoint: {load_path}')
-            sd = self.checkpoint_engine.load(load_path, map_location=self.map_location)
+            sd = self.checkpoint_engine.load(load_path, map_location=lambda storage, \
+                loc: storage)
 
             if quantize:
                 quantizer = WeightQuantization(mlp_extra_grouping=mlp_extra_grouping, mp_size=mp_world_size)
@@ -127,7 +120,7 @@ class SDLoaderBase(ABC):
         ckpt_list = [self.ckpt_list[i] for i in range(num_to_merge * mp_rank, num_to_merge * (mp_rank + 1))]
 
         logger.info(f"mp_rank: {mp_rank}, ckpt_list: {ckpt_list}")
-        sd_list = [self.checkpoint_engine.load(ckpt, map_location=self.map_location) for ckpt in ckpt_list]
+        sd_list = [self.checkpoint_engine.load(ckpt, map_location=lambda storage, loc: storage) for ckpt in ckpt_list]
         return sd_list
 
     def get_split_state_dict(self, mp_world_size, mp_rank):
@@ -140,7 +133,7 @@ class SDLoaderBase(ABC):
 
         logger.info(f"mp_rank: {mp_rank}, ckpt_list: {self.ckpt_list[ckpt_index]}, offset: {ckpt_offset}")
 
-        sd = self.checkpoint_engine.load(self.ckpt_list[ckpt_index], map_location=self.map_location)
+        sd = self.checkpoint_engine.load(self.ckpt_list[ckpt_index], map_location=lambda storage, loc: storage)
 
         return sd, num_to_split, ckpt_offset
 
@@ -174,7 +167,7 @@ class SDLoaderBase(ABC):
         #logger.info(f'checkpoint file list: {self.ckpt_list}')
         assert len(self.ckpt_list) > 0
 
-        sd = self.checkpoint_engine.load(self.ckpt_list[0], map_location=self.map_location)
+        sd = self.checkpoint_engine.load(self.ckpt_list[0], map_location=lambda storage, loc: storage)
 
         # check checkpoint count is same with saved mp_world_size
         if 'mp_world_size' in sd.keys():
@@ -342,10 +335,26 @@ class MegatronSDLoader(SDLoaderBase):
                         new_client_sd[key] = torch.cat(value_list, axis=0)
                     else:
                         new_client_sd[key] = self.merge_query_key_value(value_list, ckpt_ver)
-            elif "mlp.dense_h_to_4h.weight" in key or "word_embeddings.weight" in key or "mlp.dense_h_to_4h.bias" in key:
-                if quantize and "mlp.dense_h_to_4h.weight" in key:
-                    value_list = quantizer.Quantize(value_list, quantize_bits, groups, key=key)
+            elif "word_embeddings.weight" in key or "mlp.dense_h_to_4h.bias" in key or "lm_head.weight" in key:
                 new_client_sd[key] = torch.cat(value_list, axis=0)
+            elif "mlp.dense_h_to_4h.weight" in key:
+                if quantize:
+                    value_list = quantizer.Quantize(value_list, quantize_bits, groups, key=key)
+                # HACK:
+                # Following code checks if h_to_4h is swiglu. This is required in order to merge correctly.
+                # The correct way is to add metadata to state_dict that provides info on how to merge/split each tensor.
+                size_h_to_4h = sd_list[0]["mlp.dense_h_to_4h.weight"].numel()
+                size_4h_to_h = sd_list[0]["mlp.dense_4h_to_h.weight"].numel()
+                if size_h_to_4h == size_4h_to_h:
+                    new_client_sd[key] = torch.cat(value_list, axis=0)
+                elif size_h_to_4h == 2 * size_4h_to_h:
+                    chunked_slices = [torch.chunk(v, 2, dim=0) for v in value_list]
+                    merged_chunks_0 = torch.cat([s[0] for s in chunked_slices], dim=0)
+                    merged_chunks_1 = torch.cat([s[1] for s in chunked_slices], dim=0)
+                    new_client_sd[key] = torch.cat([merged_chunks_0, merged_chunks_1], dim=0)
+                else:
+                    assert False, f"Unsupported slices size of mlp.dense_h_to_4h.weight={size_h_to_4h} " \
+                                  f"mlp.dense_4h_to_h.weight={size_4h_to_h}"
             else:
                 new_client_sd[key] = value_list[0]
         if quantize:
@@ -390,12 +399,27 @@ class MegatronSDLoader(SDLoaderBase):
                     q_vals = quantizer.Quantize([value], quantize_bits, groups, key)
                     value = q_vals[0]
                 new_client_sd[key] = self.split_query_key_value(value, num_to_split, ckpt_offset, ckpt_ver)
-            elif "mlp.dense_h_to_4h.weight" in key or "word_embeddings.weight" in key or "mlp.dense_h_to_4h.bias" in key or "final_linear.weight" in key:
+            elif "word_embeddings.weight" in key or "mlp.dense_h_to_4h.bias" in key or "final_linear.weight" in key \
+                    or "lm_head.weight" in key:
                 assert value.shape[0] % num_to_split == 0
                 split_size = value.shape[0] // num_to_split
-                if quantize and "mlp.dense_h_to_4h.weight" in key:
+                new_client_sd[key] = torch.split(value, split_size, dim=0)[ckpt_offset]
+            elif "mlp.dense_h_to_4h.weight" in key:
+                assert value.shape[0] % num_to_split == 0
+                split_size = value.shape[0] // num_to_split
+                if quantize:
                     q_vals = quantizer.Quantize([value], quantize_bits, groups, key)
                     value = q_vals[0]
+                # HACK:
+                # Following code checks if h_to_4h is swiglu.
+                # The correct way to check is to add metadata to state_dict that provides info on
+                # how to merge/split each tensor.
+                # Currently, swiglu split is NOT supported as it requires handling of all chunks.
+                size_h_to_4h = value.numel()
+                size_4h_to_h = client_sd["mlp.dense_4h_to_h.weight"].numel()
+                assert size_h_to_4h == size_4h_to_h, \
+                    f"Split not supported dense_h_to_4h.weight size={size_h_to_4h} " \
+                    f"and dense_4h_to_h.weight size={size_4h_to_h}"
                 new_client_sd[key] = torch.split(value, split_size, dim=0)[ckpt_offset]
             else:
                 new_client_sd[key] = value
@@ -413,7 +437,7 @@ class MegatronSDLoader(SDLoaderBase):
             "mlp.dense_h_to_4h.weight", "mlp.dense_h_to_4h.bias"
         ]
 
-        sd = self.checkpoint_engine.load(ckpt_file_name, map_location=self.map_location)
+        sd = self.checkpoint_engine.load(ckpt_file_name, map_location=lambda storage, loc: storage)
 
         # partial_key is a sub-string of one key in the sd
         def check_key_exist(partial_key, sd):

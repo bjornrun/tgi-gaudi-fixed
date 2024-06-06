@@ -45,9 +45,6 @@ class TestMiCSCheckpoint(DistributedTest):
                 "mics_shard_size": shard_size
             }
         }
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["bf16"] = {"enabled": True}
         hidden_dim = 10
         with deepspeed.zero.MiCS_Init(config_dict_or_path=config_dict):
             models = [SimpleModel(hidden_dim, empty_grad=False) for _ in range(2)]

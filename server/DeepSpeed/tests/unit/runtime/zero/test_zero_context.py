@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import torch
 import deepspeed
-import os
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus, partitioned_param_data_shape
 import deepspeed.comm as dist
 
@@ -73,11 +72,30 @@ class TestZeroGatheredParametersFree(DistributedTest):
                 self.l1 = torch.nn.Linear(hidden_dim, hidden_dim)
 
         dtype = None
-        if os.getenv("REPLACE_FP16", default=None):
-            config["fp16"]["enabled"] = False
-            config["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
         with deepspeed.zero.Init(config_dict_or_path=config_dict, dtype=dtype):
+            model = MyModel(hidden_dim)
+
+        with deepspeed.zero.GatheredParameters(list(model.parameters())):
+            assert model.l1.weight.numel() != 0, "GatheredParameters should give a non-0-sized tensor"
+
+        # on exit from `GatheredParameters` the gathered params should be freed and not leak memory
+        assert model.l1.weight.numel() == 0, "outside of GatheredParameters the param should go back to be 0-sized"
+
+
+class TestMiCSGatheredParametersFree(DistributedTest):
+    world_size = 1
+
+    def test(self):
+        config_dict = {"train_batch_size": 1, "zero_optimization": {"stage": 3, "mics_shard_size": 1}}
+        hidden_dim = 10
+
+        class MyModel(torch.nn.Module):
+
+            def __init__(self, hidden_dim):
+                super(MyModel, self).__init__()
+                self.l1 = torch.nn.Linear(hidden_dim, hidden_dim)
+
+        with deepspeed.zero.MiCS_Init(config_dict_or_path=config_dict):
             model = MyModel(hidden_dim)
 
         with deepspeed.zero.GatheredParameters(list(model.parameters())):
@@ -95,10 +113,6 @@ class TestSerialContext(DistributedTest):
     def test_subclass_param(self):
         setup_serial_env()
         dtype = None
-        if os.getenv("REPLACE_FP16", default=None):
-            config["fp16"]["enabled"] = False
-            config["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
         with deepspeed.zero.Init(config=config, dtype=dtype):
             model = ConvNet()
 
@@ -227,10 +241,6 @@ class TestSerialContext(DistributedTest):
 
         net = ExtLinear()
         dtype = torch.float16
-        if os.getenv("REPLACE_FP16", default=None):
-            config["fp16"]["enabled"] = False
-            config["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
         args = SimpleNamespace(local_rank=0)
         engine, optim, _, _ = deepspeed.initialize(args=args,
                                                    model=net,
@@ -251,10 +261,6 @@ class TestScatterGather(DistributedTest):
 
     def test(self):
         dtype = None
-        if os.getenv("REPLACE_FP16", default=None):
-            config["fp16"]["enabled"] = False
-            config["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
         with deepspeed.zero.Init(dtype=dtype):
             l = torch.nn.Linear(6, 3)
         assert l.weight.ds_status == ZeroParamStatus.NOT_AVAILABLE
@@ -275,8 +281,6 @@ class TestGatherUpdate(DistributedTest):
 
     def test(self):
         dtype = torch.float16
-        if os.getenv("REPLACE_FP16", default=None):
-            dtype = torch.float32
         with deepspeed.zero.Init(dtype=dtype):
             l = torch.nn.Linear(4, 2)
         assert l.weight.ds_status == ZeroParamStatus.NOT_AVAILABLE

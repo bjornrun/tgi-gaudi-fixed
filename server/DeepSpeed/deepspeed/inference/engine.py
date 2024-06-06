@@ -26,9 +26,10 @@ from ..module_inject.policy import TransformerPolicy
 from ..module_inject.auto_tp import AutoTP
 
 from ..module_inject.replace_policy import generic_policies
-from ..module_inject.auto_tp_model_utils import build_bloom_alibi_tensor, build_mpt_atten_bias_tensor, build_mpt_alibi_tensor
+from ..module_inject.auto_tp_model_utils import build_bloom_alibi_tensor, build_mpt_atten_bias_tensor, build_mpt_alibi_tensor, get_alibi_mask
 from ..ops.transformer.inference.ds_attention import DeepSpeedSelfAttention
 from ..model_implementations.transformers.ds_transformer import DeepSpeedTransformerInference
+from ..ops.transformer.inference.op_binding.workspace import WorkspaceOp
 
 DS_INFERENCE_ENABLED = False
 from torch import nn
@@ -51,13 +52,8 @@ class InferenceEngine(Module):
         DS_INFERENCE_ENABLED = True
 
         super().__init__()
-
-        # Have to import here because inference_module is a global, but python
-        # globals only work at the module level and will not be updated unless
-        # we import it each time we init a new inference engine.
-        from ..model_implementations.transformers.ds_transformer import inference_module
-        if inference_module is not None:
-            self.destroy()
+        self.workspace = WorkspaceOp()
+        self.destroy()
 
         self.module = model
         self._config = config
@@ -181,8 +177,7 @@ class InferenceEngine(Module):
             get_accelerator().set_rng_state(_rng_state.cpu())
 
         if config.enable_cuda_graph and get_accelerator().device_name() == 'hpu':
-            import habana_frameworks.torch as ht
-            self.module = ht.hpu.wrap_in_hpu_graph(self.module)
+            self.module = get_accelerator().wrap_in_hpu_graph(self.module)
         elif config.tensor_parallel.tp_size > 1:
             assert not config.enable_cuda_graph, "Cuda graph is not supported for model parallelism"
 
@@ -190,15 +185,9 @@ class InferenceEngine(Module):
         self.local_cuda_graph = self._local_cuda_graph_used(self.module)
 
     def destroy(self):
-        # Have to import here because inference_module is a global, but python
-        # globals only work at the module level and will not be updated unless
-        # we import it each time we init a new inference engine.
-        from ..model_implementations.transformers.ds_transformer import inference_module
         DeepSpeedTransformerInference.layer_id = 0
         DeepSpeedSelfAttention.num_layers = 0
-        if inference_module is not None:
-            inference_module.release_workspace()
-            inference_module = None
+        self.workspace.release_workspace()
 
     def profile_model_time(self, use_cuda_events=True):
         if not self.model_profile_enabled and not self._config.enable_cuda_graph:
@@ -226,6 +215,10 @@ class InferenceEngine(Module):
             if hasattr(self.module.transformer, 'build_mpt_alibi_tensor'):
                 self.module.transformer.build_mpt_alibi_tensor_orig = self.module.transformer.build_mpt_alibi_tensor
                 self.module.transformer.__class__.build_mpt_alibi_tensor = build_mpt_alibi_tensor
+        if hasattr(self.module, 'model'):
+            if hasattr(self.module.model, 'get_alibi_mask'):
+                self.module.model.get_alibi_mask_orig = self.module.model.get_alibi_mask
+                self.module.model.__class__.get_alibi_mask = get_alibi_mask
 
     def build_attn_bias(self):
         if hasattr(self.module, 'transformer'):
@@ -530,11 +523,11 @@ class InferenceEngine(Module):
         get_accelerator().current_stream().wait_stream(cuda_stream)
 
         # create cuda_graph and assign static_inputs and static_outputs
-        self._cuda_graphs = torch.cuda.CUDAGraph()
+        self._cuda_graphs = get_accelerator().create_graph()
         self.static_inputs = inputs
         self.static_kwargs = kwargs
 
-        with torch.cuda.graph(self._cuda_graphs):
+        with get_accelerator().capture_to_graph(self._cuda_graphs):
             self.static_output = self.module(*self.static_inputs, **self.static_kwargs)
 
         self.cuda_graph_created = True
@@ -546,7 +539,7 @@ class InferenceEngine(Module):
         for k in kwargs:
             if torch.is_tensor(kwargs[k]):
                 self.static_kwargs[k].copy_(kwargs[k])
-        self._cuda_graphs.replay()
+        get_accelerator().replay_graph(self._cuda_graphs)
         return self.static_output
 
     def model_times(self):

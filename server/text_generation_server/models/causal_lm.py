@@ -46,6 +46,7 @@ from text_generation_server.utils import (
     StoppingCriteria,
     make_tokenizer_optional,
     is_tokenizer_transparent,
+    pad_next_token_chooser_parameters,
 )
 from text_generation_server.utils.debug import dbg_trace
 from text_generation_server.utils.speculate import get_speculate
@@ -399,10 +400,9 @@ class CausalLMBatch(Batch):
         parameters = [r.data.parameters for r in flat_requests]
         # append the dummy parameters for dummy requests
         batch_size = batches[dst_batch_idx].batch_size
-        parameters.extend(
-            [generate_pb2.NextTokenChooserParameters()] * (batch_size - len(flat_requests))
-        )
+        parameters = pad_next_token_chooser_parameters(parameters, batch_size)
 
+        # update past grammar states
         fsm_grammar_states = [0] * batch_size
         for batch in batches:
             for i, req in enumerate(batch.requests):
@@ -465,9 +465,7 @@ class CausalLMBatch(Batch):
         dummy_inputs = ["?"] * missing_inputs
         parameters = [r.parameters for r in pb.requests]
         # append the dummy parameters for dummy request
-        parameters.extend(
-            [generate_pb2.NextTokenChooserParameters()] * missing_inputs
-        )
+        parameters = pad_next_token_chooser_parameters(parameters, new_bs)
 
         next_token_chooser = HeterogeneousNextTokenChooser.from_pb(
             pb=parameters,
@@ -662,9 +660,14 @@ class CausalLM(Model):
             "return_dict": True,
         }
 
-        if model.config.model_type == "llama":
+        if model.config.model_type in ["llama", "mistral"]:
             kwargs["attn_softmax_bf16"] = True
             kwargs["trim_logits"] = True
+
+            if os.getenv("USE_FLASH_ATTENTION", "false").lower() == "true":
+                kwargs["use_flash_attention"] = True
+            if os.getenv("FLASH_ATTENTION_RECOMPUTE", "false").lower() == "true":
+                kwargs["flash_attention_recompute"] = True
 
         self.speculate = get_speculate()
 
@@ -1121,6 +1124,12 @@ class CausalLM(Model):
         return generations, batch if not stopped else None, (forward_ns, decode_ns)
 
     def warmup(self, batches: List[CausalLMBatch]) -> None:
+        def get_unfinished_requests(requests: List[CausalLMRequest]) -> List[int]:
+            return [
+                request.data.id for request in requests
+                if request.stopping_criteria.current_tokens < request.stopping_criteria.max_new_tokens
+            ]
+
         # prefill
         _, prefill_batch, _ = self.generate_token([batches.pop(0)])
         # decode
@@ -1128,18 +1137,22 @@ class CausalLM(Model):
         # shifts
         self.shifting_warmup(decode_batch)
 
-        # if decode bs is 1 warmup ends here
-        if len(batches) == 0:
-            while decode_batch is not None:
-                _, decode_batch, _ = self.generate_token([decode_batch])
-            return
+        while len(batches) > 0:
+            # prefill
+            _, prefill_batch, _ = self.generate_token([batches.pop(0)])
+            # concatenate and decode
+            _, decode_batch, _ = self.generate_token([decode_batch, prefill_batch])
+            # filter finished requests
+            request_ids = get_unfinished_requests(decode_batch.requests)
+            if len(request_ids) < len(decode_batch.requests):
+                decode_batch = decode_batch.filter(request_ids)
 
-        # prefill
-        _, prefill_batch, _ = self.generate_token([batches.pop(0)])
-        # concatenate and decode
-        _, decode_batch, _ = self.generate_token([decode_batch, prefill_batch])
-        # decodes
         while decode_batch is not None:
+            # filter finished requests
+            request_ids = get_unfinished_requests(decode_batch.requests)
+            if len(request_ids) < len(decode_batch.requests):
+                decode_batch = decode_batch.filter(request_ids)
+            # decode
             _, decode_batch, _ = self.generate_token([decode_batch])
 
     def shifting_warmup(self, batch: CausalLMBatch) -> None:

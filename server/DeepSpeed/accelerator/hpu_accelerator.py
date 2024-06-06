@@ -1,4 +1,3 @@
-# Copyright (c) 2023 Habana Labs, Ltd. an Intel Company
 # Copyright (c) Microsoft Corporation.
 # SPDX-License-Identifier: Apache-2.0
 
@@ -26,10 +25,6 @@ class HPU_Accelerator(DeepSpeedAccelerator):
                 f"HPU_Accelerator requires habana_frameworks.torch.hpu, which is not installed on this system.")
 
         self.fp16_supported = None
-
-        # TODO SW-163871: remove the below WA once SW-154947 is resolved, solves OOM.
-        zero_mark_step_req_env_var = os.getenv("DEEPSPEED_HPU_ZERO3_SYNC_MARK_STEP_REQUIRED", "0")
-        self.zero3_synchronized_mark_step_required = zero_mark_step_req_env_var.lower() in ["1", "true"]
 
     # Device APIs
     def is_synchronized_device(self):
@@ -87,8 +82,7 @@ class HPU_Accelerator(DeepSpeedAccelerator):
         self.hpu.random.initial_seed(seed)
 
     def default_generator(self, device_index):
-        return self.hpu.random.default_generators[
-            device_index]  # section that is supposed to use this is currently hpu only -refactor
+        return self.hpu.random.default_generators[device_index]
 
     # Streams/Events
     @property
@@ -107,7 +101,7 @@ class HPU_Accelerator(DeepSpeedAccelerator):
     @property
     def Event(self):
         import habana_frameworks.torch.core as htcore
-        return htcore.hpu.Event  # need correct implementation test only
+        return htcore.hpu.Event
 
     # Memory management
     def empty_cache(self):
@@ -162,12 +156,12 @@ class HPU_Accelerator(DeepSpeedAccelerator):
     def supported_dtypes(self):
         supported_dtypes = [torch.float, torch.bfloat16]
         if self.is_fp16_supported():
-            supported_dtypes.append(torch.bfloat16)
+            supported_dtypes.append(torch.half)
         return supported_dtypes
 
     # Misc
     def amp(self):
-        return None  # not supported  - doesn't seem to be used yet
+        return None
 
     def is_available(self):
         return self.hpu.is_available()
@@ -179,14 +173,24 @@ class HPU_Accelerator(DeepSpeedAccelerator):
         return
 
     def lazy_call(self, callback):
-        callback(
-        )  # currently only used in one cuda specific section of the code. re-ecvaluate implementation if this changes - add ticket.
+        callback()
 
     def communication_backend_name(self):
         return self._communication_backend_name
 
     def is_triton_supported(self):
         return False
+
+    # Graph operations
+    def create_graph(self):
+        return self.hpu.HPUGraph()
+
+    def capture_to_graph(self, graph, pool=None, stream=None):
+        return self.hpu.graph(graph, stream=stream)
+
+    def replay_graph(self, graph):
+        graph.replay()
+        return
 
     # Tensor operations
     @property
@@ -217,7 +221,7 @@ class HPU_Accelerator(DeepSpeedAccelerator):
     def LongTensor(self):
         return self.hpu.LongTensor
 
-    def pin_memory(self, tensor):
+    def pin_memory(self, tensor, align_bytes=1):
         return tensor.pin_memory(self.device())
 
     def is_pinned(self, tensor):
@@ -284,29 +288,20 @@ class HPU_Accelerator(DeepSpeedAccelerator):
         else:
             return self.class_dict['NotImplementedBuilder'] if 'NotImplementedBuilder' in self.class_dict else None
 
+    def get_compile_backend(self):
+        return "hpu_backend"
+
+    #shall be removed once moving to torch.compile
+    def wrap_in_hpu_graph(self, module):
+        if self.hpu.is_lazy():
+            module = self.hpu.wrap_in_hpu_graph(module)
+        else:
+            print("Warning: hpu graphs in eager mode is not supported, ignoring")
+        return module
+
     def build_extension(self):
         from torch.utils.cpp_extension import BuildExtension
         return BuildExtension
 
-    # TODO SW-163871: remove the below WA once SW-154947 is resolved, solves OOM.
-    def is_zero3_sync_mark_step_req(self):
-        return self.zero3_synchronized_mark_step_required
-
-    def get_optimizer(self, optimizer_name, cpu_optimization, model_parameters, **optimizer_parameters):
-        from habana_frameworks.torch.hpex.optimizers import FusedAdamW
-
-        self._optimizers_dict = {
-            'adamw': lambda arg1, **arg2: FusedAdamW(arg1, **arg2),
-            'adam': lambda arg1, **arg2: torch.optim.Adam(arg1, **arg2)
-        }
-        from deepspeed.runtime.config import ADAM_OPTIMIZER, ADAMW_OPTIMIZER, TORCH_ADAM_PARAM, ADAM_W_MODE, \
-            ADAM_W_MODE_DEFAULT
-
-        if optimizer_name in [ADAM_OPTIMIZER, ADAMW_OPTIMIZER]:
-            if cpu_optimization or optimizer_parameters.pop(TORCH_ADAM_PARAM, False):
-                return None
-            if optimizer_name == ADAM_OPTIMIZER and optimizer_parameters.pop(ADAM_W_MODE, ADAM_W_MODE_DEFAULT):
-                optimizer_name = ADAMW_OPTIMIZER
-
-        if optimizer_name in self._optimizers_dict:
-            return self._optimizers_dict[optimizer_name](model_parameters, **optimizer_parameters)
+    def export_envs(self):
+        return []

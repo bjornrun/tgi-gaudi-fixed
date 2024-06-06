@@ -16,7 +16,8 @@ class TestOtherOptimizerCheckpoint(DistributedTest):
     world_size = 2
 
     @pytest.mark.skipif(not deepspeed.ops.__compatible_ops__[FusedLambBuilder.NAME], reason="lamb is not compatible")
-    def test_checkpoint_unfused_optimizer(self, tmpdir):
+    @pytest.mark.parametrize('compile_mode', [True, False])
+    def test_checkpoint_unfused_optimizer(self, tmpdir, compile_mode):
         config_dict = {
             "train_batch_size": 2,
             "steps_per_print": 1,
@@ -45,13 +46,13 @@ class TestOtherOptimizerCheckpoint(DistributedTest):
                     "cycle_max_mom": 0.99,
                     "decay_mom_rate": 0.0
                 }
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         fp16 = True
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
-            fp16 = False
         args = args_from_dict(tmpdir, config_dict)
         hidden_dim = 10
         models = [SimpleModel(hidden_dim, empty_grad=False) for _ in range(2)]
@@ -72,7 +73,8 @@ class TestOtherOptimizerCheckpoint(DistributedTest):
                                             load_optimizer_states=False,
                                             fp16=fp16)
 
-    def test_checkpoint_fused_optimizer(self, tmpdir):
+    @pytest.mark.parametrize('compile_mode', [True, False])
+    def test_checkpoint_fused_optimizer(self, tmpdir, compile_mode):
         config_dict = {
             "train_batch_size": 2,
             "steps_per_print": 1,
@@ -87,13 +89,13 @@ class TestOtherOptimizerCheckpoint(DistributedTest):
             },
             "fp16": {
                 "enabled": True
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         fp16 = True
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
-            fp16 = False
 
         args = args_from_dict(tmpdir, config_dict)
         hidden_dim = 10
@@ -115,7 +117,8 @@ class TestOtherOptimizerCheckpoint(DistributedTest):
                                             load_optimizer_states=False,
                                             fp16=fp16)
 
-    def test_checkpoint_fp32_optimizer(self, tmpdir):
+    @pytest.mark.parametrize('compile_mode', [True, False])
+    def test_checkpoint_fp32_optimizer(self, tmpdir, compile_mode):
         config_dict = {
             "train_batch_size": 2,
             "steps_per_print": 1,
@@ -130,6 +133,10 @@ class TestOtherOptimizerCheckpoint(DistributedTest):
             },
             "fp16": {
                 "enabled": False
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
 

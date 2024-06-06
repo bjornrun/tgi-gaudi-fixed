@@ -13,21 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 -->
-> [!NOTE]
-> This is a temporal fix to get Mixtra 8x22B with full context before next release
-> Do the following:
-> 1. Change Dockerfile line 40 from
->        HF_TOKEN=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 # This is invalid token so change to your own token.
-> 2. [Follow this guide](https://medium.com/@runaker/mixtral-8x22b-on-gaudi-2-a-comprehensive-setup-guide-a9f067c4a707)
->    TL;DR:
->    ```bash
->    docker build -t tgi_gaudi .
->    model=mistralai/Mixtral-8x22B-Instruct-v0.1
->    volume=$PWD/data
->
->    docker run -p 8091:80 -v $volume:/data -e LIMIT_HPU_GRAPH=true --runtime=habana -e PT_HPU_ENABLE_LAZY_COLLECTIVES=true -e HABANA_VISIBLE_DEVICES=all -e OMPI_MCA_btl_vader_single_copy_mechanism=none --cap-add=sys_nice --ipc=host  tgi_gaudi --model-id $model --dtype bfloat16  --max-total-tokens 65536 --max-input-length 32768 --max-batch-prefill-tokens 32768 --sharded true --num-shard 8
->    ```
-
 
 # Text Generation Inference on Habana Gaudi
 
@@ -46,7 +31,7 @@ To use [🤗 text-generation-inference](https://github.com/huggingface/text-gene
 
 1. Pull the official Docker image with:
    ```bash
-   docker pull ghcr.io/huggingface/tgi-gaudi:1.2.1
+   docker pull ghcr.io/huggingface/tgi-gaudi:2.0.0
    ```
 > [!NOTE]
 > Alternatively, you can build the Docker image using the `Dockerfile` located in this folder with:
@@ -60,7 +45,7 @@ To use [🤗 text-generation-inference](https://github.com/huggingface/text-gene
    model=meta-llama/Llama-2-7b-hf
    volume=$PWD/data # share a volume with the Docker container to avoid downloading weights every run
 
-   docker run -p 8080:80 -v $volume:/data --runtime=habana -e HABANA_VISIBLE_DEVICES=all -e OMPI_MCA_btl_vader_single_copy_mechanism=none --cap-add=sys_nice --ipc=host ghcr.io/huggingface/tgi-gaudi:1.2.1 --model-id $model
+   docker run -p 8080:80 -v $volume:/data --runtime=habana -e HABANA_VISIBLE_DEVICES=all -e OMPI_MCA_btl_vader_single_copy_mechanism=none --cap-add=sys_nice --ipc=host ghcr.io/huggingface/tgi-gaudi:2.0.0 --model-id $model --max-input-tokens 1024 --max-total-tokens 2048
    ```
    > For gated models such as [LLama](https://huggingface.co/meta-llama) or [StarCoder](https://huggingface.co/bigcode/starcoder), you will have to pass `-e HUGGING_FACE_HUB_TOKEN=<token>` to the `docker run` command above with a valid Hugging Face Hub read token.
 
@@ -69,7 +54,7 @@ To use [🤗 text-generation-inference](https://github.com/huggingface/text-gene
    model=meta-llama/Llama-2-70b-hf
    volume=$PWD/data # share a volume with the Docker container to avoid downloading weights every run
 
-   docker run -p 8080:80 -v $volume:/data --runtime=habana -e PT_HPU_ENABLE_LAZY_COLLECTIVES=true -e HABANA_VISIBLE_DEVICES=all -e OMPI_MCA_btl_vader_single_copy_mechanism=none --cap-add=sys_nice --ipc=host ghcr.io/huggingface/tgi-gaudi:1.2.1 --model-id $model --sharded true --num-shard 8
+   docker run -p 8080:80 -v $volume:/data --runtime=habana -e PT_HPU_ENABLE_LAZY_COLLECTIVES=true -e HABANA_VISIBLE_DEVICES=all -e OMPI_MCA_btl_vader_single_copy_mechanism=none --cap-add=sys_nice --ipc=host ghcr.io/huggingface/tgi-gaudi:2.0.0 --model-id $model --sharded true --num-shard 8 --max-input-tokens 1024 --max-total-tokens 2048
    ```
 3. You can then send a simple request:
    ```bash
@@ -90,11 +75,11 @@ To use [🤗 text-generation-inference](https://github.com/huggingface/text-gene
 ## Adjusting TGI parameters
 
 Maximum sequence length is controlled by two arguments:
-- `--max-input-length` is the maximum possible input prompt length. Default value is `1024`.
-- `--max-total-tokens` is the maximum possible total length of the sequence (input and output). Default value is `2048`.
+- `--max-input-tokens` is the maximum possible input prompt length. Default value is `4095`.
+- `--max-total-tokens` is the maximum possible total length of the sequence (input and output). Default value is `4096`.
 
 Maximum batch size is controlled by two arguments:
-- For prefill operation, please set `--max-prefill-total-tokens` as `bs * max-input-length`, where `bs` is your expected maximum prefill batch size.
+- For prefill operation, please set `--max-prefill-total-tokens` as `bs * max-input-tokens`, where `bs` is your expected maximum prefill batch size.
 - For decode operation, please set `--max-batch-total-tokens` as `bs * max-total-tokens`, where `bs` is your expected maximum decode batch size.
 - Please note that batch size will be always padded to the nearest multiplication of `BATCH_BUCKET_SIZE` and `PREFILL_BATCH_BUCKET_SIZE`.
 
@@ -112,28 +97,144 @@ For more information and documentation about Text Generation Inference, checkout
 TGI supports FP8 precision runs within the limits provided by [Habana Quantization Toolkit](https://docs.habana.ai/en/latest/PyTorch/Inference_on_PyTorch/Inference_Using_FP8.html). Models with FP8 can be ran by properly setting QUANT_CONFIG environment variable. Detailed instruction on how to use that variable can be found in [Optimum Habana FP8 guide](https://github.com/huggingface/optimum-habana/tree/main/examples/text-generation#running-with-fp8). Summarising that instruction in TGI cases:
 
 1. Measure quantization statistics of requested model by using [Optimum Habana measurement script](https://github.com/huggingface/optimum-habana/tree/main/examples/text-generation#running-with-fp8:~:text=use_deepspeed%20%2D%2Dworld_size%208-,run_lm_eval.py,-%5C%0A%2Do%20acc_70b_bs1_measure.txt)
-2. Run requested model in TGI with proper QUANT_CONFIG setting - e.g. `QUANT_CONFIG=./quantization_config/maxabs_quant.json`
+2. Run requested model in TGI with proper QUANT_CONFIG setting - e.g. `-e QUANT_CONFIG=./quantization_config/maxabs_quant.json`.
 
 > [!NOTE]
 > Only models pointed in [supported configurations](#currently-supported-configurations) are guaranteed to work with FP8
 
 Additional hints to quantize model for TGI when using `run_lm_eval.py`:
 * use `--limit_hpu_graphs` flag to save memory
-* try to model Your use case situation by adjusting `--batch_size` , `--max_new_tokens 512` and `--max_input_tokens 512` In case of memory issues, lower those values
-* use dataset/tasks suitable for Your use case (see `--help` for defining tasks/datasets)
- 
+* try to model your use case situation by adjusting `--batch_size` , `--max_new_tokens 512` and `--max_input_tokens 512`; in case of memory issues, lower those values
+* use dataset/tasks suitable for your use case (see `--help` for defining tasks/datasets)
+
 ## Currently supported configurations
 
 Not all features of TGI are currently supported as this is still a work in progress.
 Currently supported and validated configurations (other configurations are not guaranted to work or ensure reasonable performance):
 
-<div align="left">
+### LLama 7b BF16 on 1 Gaudi2 card
 
-| Model| Cards| Decode batch size| Dtype| Max input tokens |Max total tokens|
-|:----:|:----:|:----------------:|:----:|:----------------:|:--------------:|
-| LLaMA 70b | 8     | 128 | bfloat16/FP8 | 1024 | 2048 |
-| LLaMA 7b  | 1/8   | 16  | bfloat16/FP8 | 1024 | 2048 |
-</div>
+```bash
+model=meta-llama/Llama-2-7b-chat-hf
+hf_token=YOUR_ACCESS_TOKEN   # Llama2 is a gated model and requires a special access token
+volume=$PWD/data   # share a volume with the Docker container to avoid downloading weights every run
+
+docker run -p 8080:80 \
+   --runtime=habana \
+   -v $volume:/data \
+   -e HABANA_VISIBLE_DEVICES=all \
+   -e OMPI_MCA_btl_vader_single_copy_mechanism=none \
+   -e HF_HUB_ENABLE_HF_TRANSFER=1 \
+   -e HUGGING_FACE_HUB_TOKEN=$hf_token \
+   -e PREFILL_BATCH_BUCKET_SIZE=1 \
+   -e BATCH_BUCKET_SIZE=16 \
+   -e PAD_SEQUENCE_TO_MULTIPLE_OF=128 \
+   --cap-add=sys_nice \
+   --ipc=host \
+   ghcr.io/huggingface/tgi-gaudi:2.0.0 \
+   --model-id $model \
+   --max-input-tokens 1024 \
+   --max-batch-prefill-tokens 4096 \
+   --max-total-tokens 2048 \
+   --max-batch-size 16
+```
+
+### LLama 7b FP8 on 1 Gaudi2 card
+
+```bash
+model=meta-llama/Llama-2-7b-chat-hf
+hf_token=YOUR_ACCESS_TOKEN   # Llama2 is a gated model and requires a special access token
+volume=$PWD/data   # share a volume with the Docker container to avoid downloading weights every run
+
+docker run -p 8080:80 \
+   --runtime=habana \
+   -v $volume:/data \
+   -v $PWD/quantization_config:/usr/src/quantization_config \
+   -v $PWD/hqt_output:/usr/src/hqt_output \
+   -e HABANA_VISIBLE_DEVICES=all \
+   -e OMPI_MCA_btl_vader_single_copy_mechanism=none \
+   -e HF_HUB_ENABLE_HF_TRANSFER=1 \
+   -e HUGGING_FACE_HUB_TOKEN=$hf_token \
+   -e PREFILL_BATCH_BUCKET_SIZE=1 \
+   -e BATCH_BUCKET_SIZE=64 \
+   -e PAD_SEQUENCE_TO_MULTIPLE_OF=128 \
+   -e QUANT_CONFIG=./quantization_config/maxabs_quant.json \
+   --cap-add=sys_nice \
+   --ipc=host \
+   ghcr.io/huggingface/tgi-gaudi:2.0.0 \
+   --model-id $model \
+   --max-input-tokens 1024 \
+   --max-batch-prefill-tokens 4096 \
+   --max-total-tokens 2048 \
+   --max-batch-size 64
+```
+
+### LLama 70b BF16 on 8 Gaudi2 card
+
+```bash
+model=meta-llama/Llama-2-70b-chat-hf
+hf_token=YOUR_ACCESS_TOKEN   # Llama2 is a gated model and requires a special access token
+volume=$PWD/data   # share a volume with the Docker container to avoid downloading weights every run
+
+docker run -p 8080:80 \
+   --runtime=habana \
+   -v $volume:/data \
+   -e HABANA_VISIBLE_DEVICES=all \
+   -e OMPI_MCA_btl_vader_single_copy_mechanism=none \
+   -e HF_HUB_ENABLE_HF_TRANSFER=1 \
+   -e HUGGING_FACE_HUB_TOKEN=$hf_token \
+   -e PT_HPU_ENABLE_LAZY_COLLECTIVES=true \
+   -e PREFILL_BATCH_BUCKET_SIZE=1 \
+   -e BATCH_BUCKET_SIZE=256 \
+   -e PAD_SEQUENCE_TO_MULTIPLE_OF=128 \
+   --cap-add=sys_nice \
+   --ipc=host \
+   ghcr.io/huggingface/tgi-gaudi:2.0.0 \
+   --model-id $model \
+   --max-input-tokens 1024 \
+   --max-batch-prefill-tokens 16384 \
+   --max-total-tokens 2048 \
+   --max-batch-size 256 \
+   --max-concurrent-requests 400 \
+   --sharded true \
+   --num-shard 8
+```
+
+### LLama 70b FP8 on 8 Gaudi2 card
+
+```bash
+model=meta-llama/Llama-2-70b-chat-hf
+hf_token=YOUR_ACCESS_TOKEN   # Llama2 is a gated model and requires a special access token
+volume=$PWD/data   # share a volume with the Docker container to avoid downloading weights every run
+
+docker run -p 8080:80 \
+   --runtime=habana \
+   -v $volume:/data \
+   -v $PWD/quantization_config:/usr/src/quantization_config \
+   -v $PWD/hqt_output:/usr/src/hqt_output \
+   -e HABANA_VISIBLE_DEVICES=all \
+   -e OMPI_MCA_btl_vader_single_copy_mechanism=none \
+   -e HF_HUB_ENABLE_HF_TRANSFER=1 \
+   -e HUGGING_FACE_HUB_TOKEN=$hf_token \
+   -e PT_HPU_ENABLE_LAZY_COLLECTIVES=true \
+   -e PREFILL_BATCH_BUCKET_SIZE=1 \
+   -e BATCH_BUCKET_SIZE=512 \
+   -e PAD_SEQUENCE_TO_MULTIPLE_OF=128 \
+   -e QUANT_CONFIG=./quantization_config/maxabs_quant.json \
+   --cap-add=sys_nice \
+   --ipc=host \
+   ghcr.io/huggingface/tgi-gaudi:2.0.0 \
+   --model-id $model \
+   --max-input-tokens 1024 \
+   --max-batch-prefill-tokens 16384 \
+   --max-total-tokens 2048 \
+   --max-batch-size 512 \
+   --max-concurrent-requests 700 \
+   --sharded true \
+   --num-shard 8
+```
+
+Please note that the model warmup can take several minutes, especially for FP8 configs. To minimize this time in consecutive runs, please refer to [Disk Caching Eviction Policy](https://docs.habana.ai/en/latest/PyTorch/Model_Optimization_PyTorch/Optimization_in_PyTorch_Models.html#disk-caching-eviction-policy).
 
 Other sequence lengths can be used with proportionally decreased/increased batch size (the higher sequence length, the lower batch size).
 Support for other models from Optimum Habana will be added successively.
@@ -152,6 +253,9 @@ Support for other models from Optimum Habana will be added successively.
 | SKIP_TOKENIZER_IN_TGI       | True/False | False            | Skip tokenizer for input/output processing                                                                                       | add -e in docker run command |
 | WARMUP_ENABLED              | True/False | True             | Enable warmup during server initialization to recompile all graphs. This can increase TGI setup time.                            | add -e in docker run command |
 | QUEUE_THRESHOLD_MS          | integer    | 120              | Controls the threshold beyond which the request are considered overdue and handled with priority. Shorter requests are prioritized otherwise.                            | add -e in docker run command |
+| USE_FLASH_ATTENTION         | True/False | False            | Whether to enable Habana Flash Attention, provided that the model supports it. Currently only llama and mistral supports this feature. Please refer to https://docs.habana.ai/en/latest/PyTorch/Model_Optimization_PyTorch/Optimization_in_PyTorch_Models.html?highlight=fusedsdpa#using-fused-scaled-dot-product-attention-fusedsdpa |
+| FLASH_ATTENTION_RECOMPUTE   | True/False | False            | Whether to enable Habana Flash Attention in recompute mode on first token generation. |
+
 </div>
 
 ## Profiler

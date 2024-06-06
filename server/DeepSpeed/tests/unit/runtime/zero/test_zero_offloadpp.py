@@ -7,7 +7,6 @@ import deepspeed.comm as dist
 from unit.common import DistributedTest
 from unit.simple_model import random_dataloader
 import deepspeed
-import os
 from deepspeed.runtime.zero.offload_config import DeepSpeedZeroOffloadOptimizerConfig
 import torch.nn as nn
 
@@ -37,6 +36,7 @@ class TestZeroPartialOffloadConfigSweep(DistributedTest):
     world_size = 4
 
     def test(self, h_dim: int, n_layers: int) -> None:
+
         config_dict = {
             "train_batch_size": 256,
             "steps_per_print": 1,
@@ -61,9 +61,6 @@ class TestZeroPartialOffloadConfigSweep(DistributedTest):
                 }
             }
         }
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
 
         model = NNModel(h_dim, n_layers)
         model, _, _, _ = deepspeed.initialize(model=model, model_parameters=model.parameters(), config=config_dict)

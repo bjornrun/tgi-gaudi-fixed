@@ -132,7 +132,8 @@ class Loading():
     def is_load_module(module):
         load_layers = [nn.Linear, nn.Embedding, nn.LayerNorm]
         load_layer_names = [
-            "LPLayerNorm", "SharedEmbedding", "OPTLearnedPositionalEmbedding", "LlamaRMSNorm", "FalconLinear", "MixtralRMSNorm"
+            "LPLayerNorm", "SharedEmbedding", "OPTLearnedPositionalEmbedding", "LlamaRMSNorm", "FalconLinear",
+            "MistralRMSNorm", "T5LayerNorm", "MixtralRMSNorm"
         ]
         return module.__class__ in load_layers or module._get_name() in load_layer_names
 
@@ -277,11 +278,13 @@ class AutoTP():
         module_list = AutoTP.get_module_list(model)
         assert AutoTP.supported(model), "AutoTP not supported for model. Please use kernel injection since container policy for model exists." \
         if AutoTP.kernel_supported(module_list) else "AutoTP not supported for model. Please provide policy."
+        norm_layer_name_list = ['LayerNorm', 'layer_norm', 'ln_1', 'ln_2']
+        #ln_1 , ln_2 for Qwen
         for module in module_list:
             for key, submodule in module._modules.items():
                 if isinstance(submodule, nn.Linear):
                     layer_list = layer_list + ["." + key]
-                elif isinstance(submodule, nn.LayerNorm) or key == 'LayerNorm' or key == 'layer_norm':
+                elif isinstance(submodule, nn.LayerNorm) or key in norm_layer_name_list:
                     layer_list = layer_list + ["ln"]
                 else:
                     layer_list = layer_list + AutoTP.get_layers(key, submodule)
@@ -300,6 +303,7 @@ class AutoTP():
                 elif 'self_attention.dense' in layer and 'falcon' in str(
                         type(module)):  # this is a hack to get the right linear layer for this model!
                     gem_list = gem_list + [layer]
+                # Mixtral-7x8b used w2*act(w1*w3) linear. need to replace w2 to linearallreduce.
                 elif 'w2' in layer and 'mixtral' in str(type(module)):
                     gem_list = gem_list + [layer]
 
@@ -328,7 +332,7 @@ class AutoTP():
             if self.conv_linear_layer:
                 child.weight.data = child.weight.data.transpose(-1, -2).contiguous()
             data = child.weight.data.split(get_shard_size_list(
-                weight_shape[0] if self.conv_linear_layer else weight_shape[1], self.mp_size),
+                weight_shape[0] if self.conv_linear_layer else weight_shape[1], self.mp_size, name),
                                            dim=1)
             data_dc = move(data[mp_replace.gpu_index], get_accelerator().current_device_name()).detach()
             del data
@@ -350,24 +354,24 @@ class AutoTP():
                 child.weight.data = child.weight.data.transpose(-1, -2).contiguous()
 
             if require_tp_fused_qkvw(name, self.mp_size):
-                #for detecting fused type
-                module_str = str(self.module).strip()
+                #Check and handle fused qkv for TP
                 #The copy is a regular copy, The shape of dst and src is the same
                 data_dc = move(
-                    prepare_tp_fused_qkvw(module_str, child.weight.data, self.mp_size, mp_replace.gpu_index),
+                    prepare_tp_fused_qkvw(self.module, child.weight.data, self.mp_size, mp_replace.gpu_index),
                     get_accelerator().current_device_name())
+
                 bias_data_dc = None if child.bias is None else move(
-                    prepare_tp_fused_qkvw(module_str, child.bias.data, self.mp_size, mp_replace.gpu_index),
+                    prepare_tp_fused_qkvw(self.module, child.bias.data, self.mp_size, mp_replace.gpu_index),
                     get_accelerator().current_device_name())
             else:
-                data = child.weight.data.split(get_shard_size_list(weight_shape[0], self.mp_size),
+                data = child.weight.data.split(get_shard_size_list(weight_shape[0], self.mp_size, name),
                                                dim=1 if self.conv_linear_layer else 0)
                 data_dc = move(data[mp_replace.gpu_index], get_accelerator().current_device_name()).detach()
                 del data
 
                 if child.bias is not None:
                     bias_data = child.bias.data.split(get_shard_size_list(
-                        weight_shape[1] if self.conv_linear_layer else weight_shape[0], self.mp_size),
+                        weight_shape[1] if self.conv_linear_layer else weight_shape[0], self.mp_size, name),
                                                       dim=0)
                     bias_data = move(bias_data[mp_replace.gpu_index], get_accelerator().current_device_name())
                     bias_data_dc = torch.nn.parameter.Parameter(bias_data, requires_grad=False)
@@ -386,11 +390,11 @@ class AutoTP():
         if hasattr(child.weight, 'ds_tensor'):
             data = child.weight.ds_tensor.data.split(get_shard_size_list(child.weight.shape[1], self.mp_size), dim=1)
         else:
-            data = child.weight.data.split(get_shard_size_list(child.weight.shape[1], self.mp_size), dim=1)
+            data = child.weight.data.split(get_shard_size_list(child.weight.shape[1], self.mp_size, name), dim=1)
         data = data[mp_replace.gpu_index].to(get_accelerator().current_device_name())
         data = torch.nn.parameter.Parameter(data, requires_grad=False)
 
-        new_embedding = nn.Embedding(child.weight.shape[0], get_shard_size(child.weight.shape[1], self.mp_size))
+        new_embedding = nn.Embedding(child.weight.shape[0], get_shard_size(child.weight.shape[1], self.mp_size, name))
         new_embedding.weight.data.copy_(data)
         setattr(child, "replaced", True)
         return new_embedding
@@ -400,7 +404,8 @@ class AutoTP():
             return
         for param in [
                 "n_heads", "inner_dim", "num_heads", "num_kv", "num_attention_heads", "num_attn_heads",
-                "all_head_size", "embed_dim", "hidden_size", "num_key_value_heads", "num_kv_heads"
+                "all_head_size", "embed_dim", "hidden_size", "num_key_value_heads", "num_kv_heads", "kv_n_heads",
+                "d_model"
         ]:
             if hasattr(child, param):
                 param_val = getattr(child, param)
@@ -461,11 +466,11 @@ class AutoTP():
 
     def get_model_num_kv_heads(self, config):
         num_kv_heads = None
-        kv_head_names = ['num_key_value_heads', 'num_attention_heads', 'n_heads']
+        kv_head_names = ['num_kv_heads', 'num_key_value_heads', 'num_attention_heads', 'n_heads']
         for name in kv_head_names:
             if hasattr(config, name):
                 num_kv_heads = getattr(config, name)
-                if num_kv_heads != None:
+                if num_kv_heads is not None:
                     break
         return num_kv_heads
 

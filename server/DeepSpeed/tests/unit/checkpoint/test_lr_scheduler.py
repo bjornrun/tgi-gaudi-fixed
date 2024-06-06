@@ -9,15 +9,17 @@ from deepspeed.ops.op_builder import CPUAdamBuilder
 from unit.common import DistributedTest
 from unit.simple_model import *
 from unit.checkpoint.common import checkpoint_correctness_verification
+from deepspeed.accelerator import get_accelerator
 import pytest
 
 
+@pytest.mark.parametrize('compile_mode', [True, False])
 @pytest.mark.parametrize('zero_stage, use_cpu_offload', [(0, False), (1, False), (2, False), (2, True), (3, False),
                                                          (3, True)])
 class TestLRSchedulerCheckpoint(DistributedTest):
     world_size = 2
 
-    def test_checkpoint_lr_scheduler(self, tmpdir, zero_stage, use_cpu_offload):
+    def test_checkpoint_lr_scheduler(self, tmpdir, zero_stage, use_cpu_offload, compile_mode):
         if use_cpu_offload and not deepspeed.ops.__compatible_ops__[CPUAdamBuilder.NAME]:
             pytest.skip("cpu-adam is not compatible")
 
@@ -47,16 +49,15 @@ class TestLRSchedulerCheckpoint(DistributedTest):
                     "warmup_max_lr": 0.001,
                     "warmup_num_steps": 1000
                 }
+            },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
             }
         }
         hidden_dim = 10
         fp16 = True
         zero3_init_dtype = None
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
-            fp16 = False
-            zero3_init_dtype = torch.float32
 
         if zero_stage == 3:
             global DeepSpeedZeroOptimizer_Stage3
@@ -74,7 +75,7 @@ class TestLRSchedulerCheckpoint(DistributedTest):
                                             load_lr_scheduler_states=True,
                                             fp16=fp16)
 
-    def test_checkpoint_no_lr_scheduler(self, tmpdir, zero_stage, use_cpu_offload):
+    def test_checkpoint_no_lr_scheduler(self, tmpdir, zero_stage, use_cpu_offload, compile_mode):
         if use_cpu_offload and not deepspeed.ops.__compatible_ops__[CPUAdamBuilder.NAME]:
             pytest.skip("cpu-adam is not compatible")
 
@@ -102,16 +103,15 @@ class TestLRSchedulerCheckpoint(DistributedTest):
                     "warmup_num_steps": 1000
                 }
             },
+            "compile": {
+                "enabled": compile_mode,
+                "backend": get_accelerator().get_compile_backend()
+            }
         }
         hidden_dim = 10
 
         fp16 = True
         zero3_init_dtype = None
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
-            fp16 = False
-            zero3_init_dtype = torch.float32
 
         if zero_stage == 3:
             with deepspeed.zero.Init(dtype=zero3_init_dtype):

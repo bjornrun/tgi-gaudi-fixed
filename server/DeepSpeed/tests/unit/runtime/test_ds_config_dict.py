@@ -91,7 +91,7 @@ class TestBatchConfig(DistributedTest):
 
     def test(self, num_ranks, batch, micro_batch, gas, success):
         assert dist.get_world_size() == num_ranks, \
-        'The test assumes a world size of f{num_ranks}'
+        f'The test assumes a world size of {num_ranks}'
 
         ds_batch_config = get_test_path('ds_batch_config.json')
         ds_config = DeepSpeedConfig(ds_batch_config)
@@ -165,10 +165,6 @@ class TestConfigLoad(DistributedTest):
 
     def test_dict(self, base_config):
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            base_config["fp16"]["enabled"] = False
-            base_config["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
 
         hidden_dim = 10
         model = SimpleModel(hidden_dim)
@@ -176,10 +172,6 @@ class TestConfigLoad(DistributedTest):
 
     def test_json(self, base_config, tmpdir):
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            base_config["fp16"]["enabled"] = False
-            base_config["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
 
         config_path = os.path.join(tmpdir, "config.json")
         with open(config_path, 'w') as fp:
@@ -190,10 +182,6 @@ class TestConfigLoad(DistributedTest):
 
     def test_hjson(self, base_config, tmpdir):
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            base_config["fp16"]["enabled"] = False
-            base_config["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
 
         config_path = os.path.join(tmpdir, "config.json")
         with open(config_path, 'w') as fp:
@@ -209,10 +197,6 @@ class TestDeprecatedDeepScaleConfig(DistributedTest):
     def test(self, base_config, tmpdir):
 
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            base_config["fp16"]["enabled"] = False
-            base_config["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
         config_path = create_config_from_dict(tmpdir, base_config)
         parser = argparse.ArgumentParser()
         args = parser.parse_args(args='')
@@ -240,10 +224,6 @@ class TestDistInit(DistributedTest):
     def test(self, base_config):
         hidden_dim = 10
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            base_config["fp16"]["enabled"] = False
-            base_config["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
 
         model = SimpleModel(hidden_dim)
         model, _, _, _ = deepspeed.initialize(config=base_config,
@@ -268,10 +248,6 @@ class TestInitNoOptimizer(DistributedTest):
         del base_config["optimizer"]
         hidden_dim = 10
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            base_config["fp16"]["enabled"] = False
-            base_config["fp32"] = {"enabled": True}
-            dtype = torch.float32
         model = SimpleModel(hidden_dim=hidden_dim)
 
         model, _, _, _ = deepspeed.initialize(config=base_config, model=model)
@@ -293,10 +269,6 @@ class TestArgs(DistributedTest):
 
     def test_none_args(self, base_config):
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            base_config["fp16"]["enabled"] = False
-            base_config["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
 
         model = SimpleModel(hidden_dim=10)
         model, _, _, _ = deepspeed.initialize(args=None, model=model, config=base_config)
@@ -306,10 +278,6 @@ class TestArgs(DistributedTest):
 
     def test_no_args(self, base_config):
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            base_config["fp16"]["enabled"] = False
-            base_config["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
 
         model = SimpleModel(hidden_dim=10)
         model, _, _, _ = deepspeed.initialize(model=model, config=base_config)
@@ -322,9 +290,6 @@ class TestNoModel(DistributedTest):
     world_size = 1
 
     def test(self, base_config):
-        if os.getenv("REPLACE_FP16", default=None):
-            base_config["fp16"]["enabled"] = False
-            base_config["bf16"] = {"enabled": True}
         model = SimpleModel(hidden_dim=10)
 
         with pytest.raises(AssertionError):

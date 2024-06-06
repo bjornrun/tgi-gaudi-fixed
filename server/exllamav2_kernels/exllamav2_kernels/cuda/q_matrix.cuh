@@ -18,7 +18,7 @@ public:
     int height;
     int width;
     int groups;
-    int gptq_groupsize;
+    int groupsize;
 
     int rows_8;
     int rows_6;
@@ -33,7 +33,6 @@ public:
     uint32_t* cuda_q_scale = NULL;
     half* cuda_q_scale_max = NULL;
     uint16_t* cuda_q_groups = NULL;
-    uint16_t* cuda_q_group_map = NULL;
     uint32_t* cuda_gptq_qzeros = NULL;
     half* cuda_gptq_scales = NULL;
 
@@ -54,7 +53,6 @@ public:
         uint32_t* _q_scale,
         half* _q_scale_max,
         uint16_t* _q_groups,
-        uint16_t* _q_group_map,
 
         uint32_t* _gptq_qzeros,
         half* _gptq_scales,

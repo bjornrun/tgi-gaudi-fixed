@@ -41,7 +41,7 @@ def bf16_required_version_check(accelerator_check=True):
 
     # Sometimes bf16 tests are runnable even if not natively supported by accelerator
     if accelerator_check:
-        accelerator_pass = torch_info['bf16_support']
+        accelerator_pass = get_accelerator().is_bf16_supported()
     else:
         accelerator_pass = True
 
@@ -128,3 +128,10 @@ def get_hpu_dev_version():
             assert False, 'Unexpected hpu device Type: {}'.format(return_dict['devicetype'])
     else:
         return hpu_dev
+
+
+def hpu_lazy_enabled():
+    if get_accelerator().device_name() == 'hpu':
+        import habana_frameworks.torch.hpu as thpu
+        return thpu.is_lazy()
+    return False

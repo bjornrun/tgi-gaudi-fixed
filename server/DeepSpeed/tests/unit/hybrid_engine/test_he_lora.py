@@ -152,8 +152,6 @@ class TestHybridEngineLoRA(DistributedTest):
 
     def test_lora(self, batch_size, model_name, zero_stage, offload_device):
         replace_fp16_to_bf16 = False
-        if os.getenv("REPLACE_FP16", default=None):
-            replace_fp16_to_bf16 = True
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         model = self.get_model(model_name, replace_fp16_to_bf16)
         tokenizer = self.get_tokenizer(model_name)

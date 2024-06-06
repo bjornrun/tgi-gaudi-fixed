@@ -4,7 +4,6 @@
 # DeepSpeed Team
 
 import pytest
-import os
 import torch
 from unit.common import DistributedTest
 from unit.simple_model import UnusedParametersModel, random_dataloader
@@ -44,10 +43,6 @@ class TestStage2IgnoreUnusedParameters(DistributedTest):
         }
         hidden_dim = 4
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["fp32"] = {"enabled": True}
-            dtype = torch.float
 
         model = UnusedParametersModel(hidden_dim=hidden_dim)
         model, _, _, _ = deepspeed.initialize(config=config_dict, model=model, model_parameters=model.parameters())

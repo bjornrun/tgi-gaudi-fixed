@@ -5,7 +5,7 @@
 
 import pytest
 
-from pydantic import ValidationError
+from deepspeed.pydantic_v1 import ValidationError
 
 from deepspeed.accelerator import get_accelerator
 from deepspeed.inference.v2.ragged import DSStateManagerConfig

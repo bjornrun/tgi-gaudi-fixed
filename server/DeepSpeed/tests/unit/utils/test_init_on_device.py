@@ -4,7 +4,6 @@
 # DeepSpeed Team
 
 import torch
-import os
 import pytest
 from unit.simple_model import SimpleModel
 from deepspeed import OnDevice
@@ -22,8 +21,6 @@ class TestOnDevice(DistributedTest):
             pytest.skip("meta tensors only became stable after torch 1.10")
 
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            dtype = torch.float
         with OnDevice(dtype=dtype, device=device):
             model = SimpleModel(4)
 

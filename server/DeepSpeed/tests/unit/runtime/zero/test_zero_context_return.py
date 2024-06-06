@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import torch
 import pytest
 import deepspeed
-import os
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 
 from utils import setup_serial_env
@@ -139,10 +138,6 @@ class TestReturnParam(DistributedTest):
 
         net = DanglingExt()
         dtype = torch.float16
-        if os.getenv("REPLACE_FP16", default=None):
-            config["fp16"]["enabled"] = False
-            config["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
         args = SimpleNamespace(local_rank=0)
         engine, _, _, _ = deepspeed.initialize(args=args, model=net, model_parameters=net.parameters(), config=config)
 
@@ -157,10 +152,6 @@ class TestReturnParam(DistributedTest):
         setup_serial_env()
         print()
         dtype = torch.float16
-        if os.getenv("REPLACE_FP16", default=None):
-            config["fp16"]["enabled"] = False
-            config["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
         net = ModelContainer(return_obj=True)
 
         args = SimpleNamespace(local_rank=0)
@@ -179,10 +170,6 @@ class TestReturnParam(DistributedTest):
         setup_serial_env()
         print()
         dtype = torch.float16
-        if os.getenv("REPLACE_FP16", default=None):
-            config["fp16"]["enabled"] = False
-            config["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
         net = ModelContainerVariableOutputType(output_type=output_type)
 
         args = SimpleNamespace(local_rank=0)

@@ -30,9 +30,6 @@ def test_attention(BATCH, H, N_CTX, D_HEAD, causal, use_flash, dtype=torch.float
     if not deepspeed.HAS_TRITON:
         pytest.skip("triton has to be installed for the test")
 
-    if not get_accelerator().is_triton_supported():
-        pytest.skip(f"triton is not supported by {get_accelerator().device_name()}")
-
     minus_inf = -65504.0
 
     # skip autotune in testing

@@ -3,25 +3,29 @@
 
 # DeepSpeed Team
 
+import pytest
+
+import itertools
 import os
 import time
-import torch
-import pytest
+
 import json
-import itertools
 import deepspeed
-from deepspeed.git_version_info import torch_info
-from unit.common import DistributedTest
+import torch
+
+from huggingface_hub import HfApi, hf_api
 from packaging import version as pkg_version
-from deepspeed.ops.op_builder import OpBuilder
-from transformers import pipeline, AutoTokenizer
+from torch import nn
+from transformers import pipeline
 from transformers.models.t5.modeling_t5 import T5Block
 from transformers.models.roberta.modeling_roberta import RobertaLayer
-from huggingface_hub import HfApi, hf_api
-from deepspeed.model_implementations import DeepSpeedTransformerInference
-from torch import nn
 from deepspeed.accelerator import get_accelerator
+from deepspeed.git_version_info import torch_info
+from deepspeed.model_implementations import DeepSpeedTransformerInference
 from deepspeed.ops.op_builder import InferenceBuilder
+from deepspeed.ops.op_builder import OpBuilder
+
+from unit.common import DistributedTest
 from transformers import BertLayer
 
 rocm_version = OpBuilder.installed_rocm_version()
@@ -29,28 +33,28 @@ if rocm_version != (0, 0):
     pytest.skip("skip inference tests on rocm for now", allow_module_level=True)
 
 _bert_models = [
-    "bert-base-cased",
-    "bert-base-uncased",
-    "bert-large-cased",
-    "bert-large-uncased",
-    "bert-base-multilingual-cased",
-    "bert-base-multilingual-uncased",
+    "google-bert/bert-base-cased",
+    "google-bert/bert-base-uncased",
+    "google-bert/bert-large-cased",
+    "google-bert/bert-large-uncased",
+    "google-bert/bert-base-multilingual-cased",
+    "google-bert/bert-base-multilingual-uncased",
     "deepset/minilm-uncased-squad2",
     "cross-encoder/ms-marco-MiniLM-L-12-v2",
     "dslim/bert-base-NER",
-    "bert-large-uncased-whole-word-masking-finetuned-squad",
-    "distilbert-base-cased-distilled-squad",
+    "google-bert/bert-large-uncased-whole-word-masking-finetuned-squad",
+    "distilbert/distilbert-base-cased-distilled-squad",
 ]
 _roberta_models = [
-    "roberta-large",
-    "roberta-base",
+    "FacebookAI/roberta-large",
+    "FacebookAI/roberta-base",
     "deepset/roberta-base-squad2",
     "j-hartmann/emotion-english-distilroberta-base",
     "Jean-Baptiste/roberta-large-ner-english",
 ]
 _gpt_models = [
-    "gpt2",
-    "distilgpt2",
+    "openai-community/gpt2",
+    "distilbert/distilgpt2",
     "Norod78/hebrew-bad_wiki-gpt_neo-tiny",
     "EleutherAI/gpt-j-6b",
     "EleutherAI/pythia-70m-deduped",
@@ -272,7 +276,7 @@ def validate_test(model_w_task, dtype, enable_cuda_graph, enable_triton):
         msg = f"Not enough GPU memory to run {model} with dtype {dtype}"
     elif ("bloom" in model) and (dtype != torch.half):
         msg = f"Bloom models only support half precision, cannot use dtype {dtype}"
-    elif ("bert" not in model.lower()) and enable_cuda_graph:
+    elif (model not in _bert_models + _roberta_models) and enable_cuda_graph:
         msg = "Non bert/roberta models do no support CUDA Graph"
     elif not get_accelerator().is_triton_supported() and enable_triton:
         msg = f"Triton is not supported for {get_accelerator().device_name()}."
@@ -280,11 +284,13 @@ def validate_test(model_w_task, dtype, enable_cuda_graph, enable_triton):
         msg = "Triton is for fp16"
     elif enable_triton and not deepspeed.HAS_TRITON:
         msg = "triton needs to be installed for the test"
-    elif ("bert" not in model.lower()) and enable_triton:
+    elif (model not in _bert_models + _roberta_models) and enable_triton:
         msg = "Triton kernels do not support Non bert/roberta models yet"
 
     # These should be removed once we fix several inference tests failing
-    if model in ["EleutherAI/pythia-70m-deduped", "distilbert-base-cased-distilled-squad", "EleutherAI/gpt-j-6b"]:
+    if model in [
+            "EleutherAI/pythia-70m-deduped", "distilbert/distilbert-base-cased-distilled-squad", "EleutherAI/gpt-j-6b"
+    ]:
         msg = "Test is currently broken"
     return msg
 
@@ -307,6 +313,12 @@ class TestModelTask(DistributedTest):
         invalid_test_msg = validate_test(model_w_task, dtype, enable_cuda_graph, enable_triton)
         if invalid_test_msg:
             pytest.skip(invalid_test_msg)
+
+        if dtype not in get_accelerator().supported_dtypes():
+            pytest.skip(f"Acceleraor {get_accelerator().device_name()} does not support {dtype}.")
+
+        if not deepspeed.ops.__compatible_ops__[InferenceBuilder.NAME]:
+            pytest.skip("This op had not been implemented on this system.", allow_module_level=True)
 
         model, task = model_w_task
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
@@ -505,7 +517,7 @@ class TestMPSize(DistributedTest):
 
 
 @pytest.mark.inference
-@pytest.mark.parametrize("model_w_task", [("gpt2", "text-generation")], ids=["gpt2"])
+@pytest.mark.parametrize("model_w_task", [("openai-community/gpt2", "text-generation")], ids=["gpt2"])
 class TestLowCpuMemUsage(DistributedTest):
     world_size = 1
 
@@ -541,53 +553,13 @@ class TestLowCpuMemUsage(DistributedTest):
 
 
 @pytest.mark.seq_inference
-@pytest.mark.parametrize("model_w_task", [("tiiuae/falcon-7b", "text-generation")], ids=["falcon"])
-class TestAutoTP(DistributedTest):
-    world_size = 1
-
-    def test(
-        self,
-        model_w_task,
-        query,
-        inf_kwargs,
-        assert_fn,
-    ):
-        # TODO: enable this test for H100 tests
-        pytest.skip("Not enough GPU memory for this on V100 runners")
-        model, task = model_w_task
-        dtype = torch.bfloat16
-        local_rank = int(os.getenv("LOCAL_RANK", "0"))
-
-        # We have to load these large models on CPU with pipeline because not
-        # enough GPU memory
-        tokenizer = AutoTokenizer.from_pretrained(model, use_fast=True)
-        pipe = pipeline(task,
-                        model=model,
-                        tokenizer=tokenizer,
-                        torch_dtype=dtype,
-                        trust_remote_code=True,
-                        device=torch.device("cpu"),
-                        framework="pt")
-        #bs_output = pipe(query, **inf_kwargs)
-
-        pipe.model = deepspeed.init_inference(pipe.model, mp_size=self.world_size, replace_with_kernel_inject=False)
-        # Switch device to GPU so that input tensors are not on CPU
-        pipe.device = torch.device(get_accelerator().device_name(local_rank))
-        ds_output = pipe(query, **inf_kwargs)
-
-        #print(local_rank, "baseline", bs_output)
-        print(local_rank, "deepspeed", ds_output)
-        #assert assert_fn(bs_output, ds_output)
-
-
-@pytest.mark.seq_inference
 @pytest.mark.parametrize(
     "model_w_task, injection_policy",
     [
         (("google/t5-v1_1-small", "text2text-generation"), {
             T5Block: ('SelfAttention.o', 'EncDecAttention.o', 'DenseReluDense.wo')
         }),
-        (("roberta-large", "fill-mask"), {
+        (("FacebookAI/roberta-large", "fill-mask"), {
             RobertaLayer: ('output.dense')
         }),
     ],
@@ -614,16 +586,15 @@ class TestInjectionPolicy(DistributedTest):
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         world_size = int(os.getenv("WORLD_SIZE", "2"))
 
-        # We have to load these large models on CPU with pipeline because not
-        # enough GPU memory
-        pipe = pipeline(task, model=model, device=torch.device("cpu"), framework="pt")
+        pipe = pipeline(task,
+                        model=model,
+                        device=torch.device(get_accelerator().device_name(local_rank)),
+                        framework="pt")
         bs_output = pipe(query, **inf_kwargs)
         pipe.model = deepspeed.init_inference(pipe.model,
                                               mp_size=world_size,
                                               dtype=dtype,
                                               injection_policy=injection_policy)
-        # Switch device to GPU so that input tensors are not on CPU
-        pipe.device = torch.device(get_accelerator().device_name(local_rank))
         ds_output = pipe(query, **inf_kwargs)
 
         print(local_rank, "baseline", bs_output)
@@ -653,25 +624,24 @@ class TestAutoTensorParallelism(DistributedTest):
         if invalid_test_msg:
             pytest.skip(invalid_test_msg)
 
-        if dtype not in get_accelerator().supported_dtypes():
-            pytest.skip(f"Acceleraor {get_accelerator().device_name()} does not support {dtype}.")
-
-        # TODO: enable this test after torch 2.1 stable release
-        if dtype == torch.bfloat16 and model_w_task[0] == "Salesforce/codegen-350M-mono":
-            pytest.skip("Codegen model(bf16) need to use torch version > 2.0.")
-
         model, task = model_w_task
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         world_size = int(os.getenv("WORLD_SIZE", "2"))
 
-        # We have to load these large models on CPU with pipeline because not
-        # enough GPU memory
-        pipe = pipeline(task, model=model, device=torch.device("cpu"), framework="pt")
+        if dtype not in get_accelerator().supported_dtypes():
+            pytest.skip(f"Acceleraor {get_accelerator().device_name()} does not support {dtype}.")
+
+        if model == "Salesforce/codegen-350M-mono":
+            pytest.skip("Disable Codegen model due to slight result difference")
+            #TODO: re-enable this test once we have a fix for the slight result difference
+
+        pipe = pipeline(task,
+                        model=model,
+                        device=torch.device(get_accelerator().device_name(local_rank)),
+                        framework="pt")
         bs_output = pipe(query, **inf_kwargs)
 
         pipe.model = deepspeed.init_inference(pipe.model, mp_size=world_size, dtype=dtype)
-        # Switch device to GPU so that input tensors are not on CPU
-        pipe.device = torch.device(get_accelerator().device_name(local_rank))
         ds_output = pipe(query, **inf_kwargs)
 
         print(local_rank, "baseline", bs_output)
@@ -717,7 +687,7 @@ class TestAutoTensorParallelism(DistributedTest):
     (
         ["gpt2", "EleutherAI/gpt-neo-2.7B"],
         #["gpt2", "EleutherAI/gpt-j-6b"], # Causing OOM for this test
-        ["gpt2", "gpt2-xl"],
+        ["gpt2", "openai-community/gpt2-xl"],
     ),
 )
 @pytest.mark.parametrize("task", ["lambada_standard"])

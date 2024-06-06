@@ -5,14 +5,13 @@
 
 import pytest
 from typing import Callable
-import os
 import torch
 from torch.optim import Optimizer, Adam, AdamW
 from torch.optim.lr_scheduler import _LRScheduler, LambdaLR
 
 from unit.simple_model import SimpleModel, random_dataloader
 from unit.common import DistributedTest
-from unit.util import bf16_required_version_check, required_amp_check
+from unit.util import bf16_required_version_check, required_amp_check, hpu_lazy_enabled
 
 import deepspeed
 from deepspeed.ops.adam import FusedAdam
@@ -47,10 +46,6 @@ class TestNoOptim(DistributedTest):
         #hidden_dim = 16 * 1024
         hidden_dim = 4
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            ds_config["fp16"]["enabled"] = False
-            ds_config["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
 
         with deepspeed.zero.Init(enabled=zero_stage == 3, config_dict_or_path=ds_config):
             model = SimpleModel(hidden_dim, nlayers=78)
@@ -231,7 +226,6 @@ class TestOptimizerImplementation(DistributedTest):
         # BF16 Wrapper
         is_supported[(None, 'bf16', 'fp32')] = True
         is_supported[(None, 'bf16', None)] = True
-        is_supported[(None, 'bf16', 'bf16')] = True
         # No Wrapper
         is_supported[(None, 'fp32', None)] = True
         is_supported[(None, 'fp32', 'fp32')] = True
@@ -239,7 +233,7 @@ class TestOptimizerImplementation(DistributedTest):
         hidden_dim = 10
         model = SimpleModel(hidden_dim)
         # TODO: SW-145674 remove this WA when SW-145671 is resolved.
-        if get_accelerator().device_name() == 'hpu':
+        if hpu_lazy_enabled():
             model.to(get_accelerator().device_name())
         model_parameters = list(model.parameters())
 

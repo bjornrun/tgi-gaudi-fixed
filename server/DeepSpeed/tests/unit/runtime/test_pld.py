@@ -6,7 +6,6 @@
 import numpy as np
 import deepspeed
 import torch
-import os
 import pytest
 from deepspeed.runtime.progressive_layer_drop import ProgressiveLayerDrop
 from unit.common import DistributedTest
@@ -51,10 +50,6 @@ class TestPLDModel(DistributedTest):
         }
         hidden_dim = 10
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
         model = PLD_SimpleModel(hidden_dim, empty_grad=False)
         model, _, _, _ = deepspeed.initialize(config=config_dict, model=model, model_parameters=model.parameters())
 
@@ -100,10 +95,6 @@ class TestNonPLDModel(DistributedTest):
         }
         hidden_dim = 10
         dtype = torch.half
-        if os.getenv("REPLACE_FP16", default=None):
-            config_dict["fp16"]["enabled"] = False
-            config_dict["bf16"] = {"enabled": True}
-            dtype = torch.bfloat16
 
         model = SimpleModel(hidden_dim, empty_grad=False)
         model, _, _, _ = deepspeed.initialize(config=config_dict, model=model, model_parameters=model.parameters())

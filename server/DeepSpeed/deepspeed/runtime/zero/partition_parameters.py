@@ -237,7 +237,7 @@ def zero_wrapper_for_fp_tensor_constructor(fn: Callable, target_fp_dtype: torch.
             kwargs['device'] = torch.device(get_accelerator().device_name(os.environ["LOCAL_RANK"]))
         tensor: Tensor = fn(*args, **kwargs)
         if tensor.is_floating_point():
-            tensor = tensor.to(target_fp_dtype)
+            tensor = tensor.to(target_fp_dtype)  #TODO(SW-180933) remove when SW-174023 is resolved
 
         return tensor
 
@@ -281,9 +281,6 @@ def free_param(param: Parameter) -> None:
         # need to make sure that we don't free the parameter while it is still
         # being used for computation
         if not get_accelerator().is_synchronized_device():
-            # TODO SW-163871: remove the below WA once SW-154947 is resolved, solves OOM.
-            if get_accelerator().device_name() == "hpu" and get_accelerator().is_zero3_sync_mark_step_req():
-                get_accelerator().synchronize()
             param.data.record_stream(get_accelerator().current_stream())
     # param.data doesn't store anything meaningful in partitioned state
     param.data = torch.empty(0, dtype=param.dtype, device=param.device)
@@ -309,6 +306,7 @@ class InsertPostInitMethodToModuleSubClasses(object):
             torch.half, torch.bfloat16, torch.float
         ], f"Invalid data type {self.dtype}, allowed values are [torch.half, torch.bfloat16, torch.float]"
         self.wrapped_cls = set()
+        self.skip_init_depth = 0
 
         self.quantized_initialization = None
         if ds_config is not None and ds_config.weight_quantization_config and ds_config.weight_quantization_config.quantized_initialization:
@@ -432,6 +430,51 @@ class InsertPostInitMethodToModuleSubClasses(object):
 
             return wrapped_apply
 
+        def hook_for_skip_init(module):
+            # this function is intended for handling the logic of torch.nn.utils.skip_init
+            # skip_init:module_cls(*args, **kwargs).to_empty(device=final_device), where kwargs['device']='meta'
+            # the function call occurs between module_cls(*args, **kwargs) and to_empty(device=final_device).
+            def partition_after_empty_init(f):
+
+                @functools.wraps(f)
+                def wrapper(module, *args, **kwargs):
+                    _module = f(module, *args, **kwargs)
+                    # here is the post-hook for module.apply(empty_like...)
+                    # after module.apply(empty_like...), the module has completed its empty init on real device
+                    # since skip_init won't involve any computations or weight adjustments, we can directly utilize post_init
+                    self._post_init_method(_module)
+                    return _module
+
+                return wrapper
+
+            def post_wrapper_to_empty(f):
+                # append some wrapper restoration after to_empty() call
+                @functools.wraps(f)
+                def wrapper(*args, **kwargs):
+                    res = f(*args, **kwargs)
+                    # restore _apply hook
+                    for subclass in get_all_subclasses(torch.nn.modules.module.Module):
+                        _disable_class_apply(subclass)
+                    # self restore
+                    module.to_empty = f
+                    return res
+
+                return wrapper
+
+            def _enable_class_apply(cls):
+                cls._old_apply_of_skip_init_hook = cls._apply
+                cls._apply = partition_after_empty_init(cls._apply)
+
+            def _disable_class_apply(cls):
+                cls._apply = cls._old_apply_of_skip_init_hook
+
+            # add hooks for to_empty: apply_(empty_like)
+            for subclass in get_all_subclasses(torch.nn.modules.module.Module):
+                _enable_class_apply(subclass)
+
+            # add a restore hook when exiting skip_init
+            module.to_empty = post_wrapper_to_empty(module.to_empty)
+
         def partition_after(f):
 
             @functools.wraps(f)
@@ -453,16 +496,25 @@ class InsertPostInitMethodToModuleSubClasses(object):
                     is_child_module = True
                     setattr(module, "_ds_child_entered", True)
 
-                f(module, *args, **kwargs)
+                init_on_meta = 'device' in kwargs and kwargs['device'] == 'meta'
+                if init_on_meta:
+                    self.skip_init_depth += 1
 
+                f(module, *args, **kwargs)
+                if init_on_meta and self.skip_init_depth == 1:
+                    # check and handle the logic of empty_init
+                    hook_for_skip_init(module)
                 if is_child_module:
                     # child's __init__ is done, now we can run a single post_init on the child object
                     delattr(module, "_ds_child_entered")
 
                     print_rank_0(f'Running post_init for {module.__class__.__name__}', force=False)
-                    self._post_init_method(module)
+                    if self.skip_init_depth == 0:
+                        self._post_init_method(module)
 
                 print_rank_0(f'After initializing followed by post init for {module.__class__.__name__}', force=False)
+                if init_on_meta:
+                    self.skip_init_depth -= 1
 
             return wrapper
 
@@ -509,7 +561,6 @@ class InsertPostInitMethodToModuleSubClasses(object):
         self.patched = True
 
     def unpatch_init_and_builtins(self):
-
         if self.patched:
 
             def _disable_class(cls):
@@ -931,12 +982,8 @@ class Init(InsertPostInitMethodToModuleSubClasses):
 
         # Local device is the device where the parameters are consumed, must be default device.
         # It is the device where parameters are fully instantiated using allgather
-        # todo SW-143933 remove the below HPU wa for torch.device initialization, ticket SW-143931 has to be solved.
-        if get_accelerator().device_name() == "hpu":
-            self.local_device = torch.device("hpu")
-        else:
-            self.local_device = torch.device(get_accelerator().device_name(os.environ["LOCAL_RANK"]))
-            get_accelerator().set_device(self.local_device)
+        self.local_device = torch.device(get_accelerator().device_name(os.environ["LOCAL_RANK"]))
+        get_accelerator().set_device(self.local_device)
 
         self.quantized_weights = zero_quantized_weights
         if _ds_config is not None and _ds_config.zero_config.zero_quantized_weights and not self.quantized_weights:
@@ -993,9 +1040,10 @@ class Init(InsertPostInitMethodToModuleSubClasses):
     def _zero_init_param(self, param):
         self._convert_to_deepspeed_param(param)
         if dist.get_world_group() == self.get_dp_process_group():
-            dist.broadcast(param, 0, self.get_dp_process_group())
+            dist.broadcast(param.data, 0, self.get_dp_process_group())
         else:
-            dist.broadcast(param, dist.get_global_rank(self.get_dp_process_group(), 0), self.get_dp_process_group())
+            dist.broadcast(param.data, dist.get_global_rank(self.get_dp_process_group(), 0),
+                           self.get_dp_process_group())
         param.partition()
 
     def _convert_to_zero_parameters(self, param_list):
@@ -1104,7 +1152,9 @@ class Init(InsertPostInitMethodToModuleSubClasses):
         def _all_gather_dtype(dtype, params, forward, world_size, rank_in_group, ds_process_group):
             partition_sz = sum(p.ds_tensor.ds_numel for p in params)
 
-            if params[0].ds_secondary_tensor is not None and not forward:
+            use_secondary_tensor = params[0].ds_secondary_tensor is not None and not forward
+
+            if use_secondary_tensor:
                 partition_sz = sum(p.ds_tensor.ds_numel * p.ds_secondary_tensor_num_of_groups for p in params)
 
             flat_tensor = torch.empty(partition_sz * world_size,
@@ -1116,13 +1166,11 @@ class Init(InsertPostInitMethodToModuleSubClasses):
             for i in range(world_size):
                 partitions.append(flat_tensor.narrow(0, partition_sz * i, partition_sz))
 
-            if params[0].ds_secondary_tensor is not None and not forward:
-                use_secondary_tensor = True
+            if use_secondary_tensor:
                 instrument_w_nvtx(
                     torch.cat)([p.ds_secondary_tensor.to(get_accelerator().current_device_name()) for p in params],
                                out=partitions[rank_in_group])
             else:
-                use_secondary_tensor = False
                 instrument_w_nvtx(torch.cat)([p.ds_tensor.to(get_accelerator().current_device_name()) for p in params],
                                              out=partitions[rank_in_group])
             handle = _dist_allgather_fn(partitions[rank_in_group], flat_tensor, ds_process_group)
@@ -1187,7 +1235,7 @@ class Init(InsertPostInitMethodToModuleSubClasses):
 
             if len(params) == 1:
                 # have an opportunity to avoid some intermediate memory allocations
-                param, = params
+                param = params[0]
                 buffer_size = math.ceil(param.ds_numel / world_size) * world_size
                 if use_secondary_tensor:
                     buffer_size = param.ds_secondary_tensor.shape[0] * world_size  #make sure out is appropriately sized
@@ -1261,7 +1309,6 @@ class Init(InsertPostInitMethodToModuleSubClasses):
                         for dtype, params in dtype_params.items():
                             handles.append(
                                 _all_gather_dtype(dtype, params, forward, world_size, rank_in_group, ds_process_group))
-
                         return MultipleAllGatherHandles(handles)
 
                     else:
@@ -1650,19 +1697,16 @@ class Init(InsertPostInitMethodToModuleSubClasses):
             secondary_end = secondary_start + secondary_partition_size
 
             one_dim_param = param.contiguous().view(-1)
-            start = partition_size * self.rank
-            end = start + partition_size
-            if start < param.ds_numel and end <= param.ds_numel:
-                if secondary_start < param.ds_numel and secondary_end <= param.ds_numel:
-                    sec_src_tensor = one_dim_param.narrow(0, secondary_start, secondary_partition_size)
-                    param.ds_secondary_tensor.copy_(sec_src_tensor)
 
-            else:
-                if start < param.ds_numel:
-                    elements_to_copy = param.ds_numel - start
-                    elements_to_copy_sec = elements_to_copy * param.ds_secondary_tensor_num_of_groups
-                    param.ds_secondary_tensor.narrow(0, 0, elements_to_copy_sec).copy_(
-                        one_dim_param.narrow(0, secondary_start, elements_to_copy_sec))
+            # ds_numel is unpadded, so the last chunk of the secondary tensor might not be secondary_partition_size
+            sec_numel = param.ds_numel - secondary_start if secondary_end > param.ds_numel else secondary_partition_size
+
+            # copy from full tensor to secondary tensor
+            param.ds_secondary_tensor.narrow(0, 0,
+                                             sec_numel).copy_(one_dim_param.narrow(0, secondary_start, sec_numel))
+
+            # TODO: This is a temporary fix to avoid the issue that 2nd tensor all-gather happens before 2nd tensor partition is done
+            get_accelerator().current_stream().synchronize()
 
             print_rank_0(f"{param.ds_id} partitioned type {param.dtype} dev {param.device} shape {param.shape}",
                          force=False)
@@ -2195,7 +2239,7 @@ class GatheredParameters:
             self.params[0].partition(param_list=self.params, has_been_updated=False)
             return
 
-        handles = [dist.broadcast(p, self.src_rank, group=p.ds_process_group, async_op=True) for p in self.params]
+        handles = [dist.broadcast(p.data, self.src_rank, group=p.ds_process_group, async_op=True) for p in self.params]
         for h in handles:
             h.wait()
         self.params[0].partition(param_list=self.params, has_been_updated=True)

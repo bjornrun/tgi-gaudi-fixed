@@ -98,7 +98,7 @@ class DeepSpeedZeroConfig(DeepSpeedConfigModel):
     memory fragmentation during backward pass.
     """
 
-    reduce_scatter: bool = False
+    reduce_scatter: bool = True
     """
     Uses reduce or reduce scatter instead of allreduce to average gradients
     """
