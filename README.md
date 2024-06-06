@@ -14,6 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
+> **⚠️ Temporary fix to get Mixtral 8x22B with 64K context.
+> If you are on SynapseAI 1.16, check out 1.16 of this repo
+>
+> See this guide for setup: [Mixtral 8x22B on Gaudi 2: A Comprehensive Setup Guide](https://runaker.medium.com/mixtral-8x22b-on-gaudi-2-a-comprehensive-setup-guide-a9f067c4a707)
+> For optimizations [Optimizing Mixtral 8x22b for Gaudi 2](https://medium.com/@runaker/optimizing-mixtral-8x22b-for-gaudi-2-45ad78cd96da)
+> 
+
 # Text Generation Inference on Habana Gaudi
 
 ## Table of contents
