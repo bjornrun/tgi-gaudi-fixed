@@ -59,6 +59,17 @@ class ChatCompletionComplete(BaseModel):
     usage: Optional[Any] = None
 
 
+class CompletionComplete(BaseModel):
+    # Index of the chat completion
+    index: int
+    # Message associated with the chat completion
+    text: str
+    # Log probabilities for the chat completion
+    logprobs: Optional[Any]
+    # Reason for completion
+    finish_reason: str
+
+
 class Function(BaseModel):
     name: Optional[str]
     arguments: str
@@ -104,6 +115,16 @@ class ChatComplete(BaseModel):
     usage: Any
 
 
+class Completion(BaseModel):
+    # Completion details
+    id: str
+    object: str
+    created: int
+    model: str
+    system_fingerprint: str
+    choices: List[CompletionComplete]
+
+
 class ChatRequest(BaseModel):
     # Model identifier
     model: str
@@ -138,6 +159,8 @@ class ChatRequest(BaseModel):
     top_p: Optional[float] = None
     # List of tools to be used
     tools: Optional[List[Tool]] = None
+    # A prompt to be appended before the tools
+    tool_prompt: Optional[str] = None
     # Choice of tool to be used
     tool_choice: Optional[str] = None
 

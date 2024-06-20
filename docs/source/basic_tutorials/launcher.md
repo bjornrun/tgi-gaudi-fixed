@@ -162,7 +162,7 @@ Options:
           This setting is only applied if there is room in the batch as defined by `max_batch_total_tokens`.
           
           [env: WAITING_SERVED_RATIO=]
-          [default: 1.2]
+          [default: 0.3]
 
 ```
 ## MAX_BATCH_PREFILL_TOKENS
@@ -397,6 +397,15 @@ Options:
 ```shell
   -e, --env
           Display a lot of information about your runtime environment
+
+```
+## MAX_CLIENT_BATCH_SIZE
+```shell
+      --max-client-batch-size <MAX_CLIENT_BATCH_SIZE>
+          Control the maximum number of inputs that a client can send in a single request
+          
+          [env: MAX_CLIENT_BATCH_SIZE=]
+          [default: 4]
 
 ```
 ## HELP
